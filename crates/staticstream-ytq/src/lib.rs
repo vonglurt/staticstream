@@ -18,6 +18,14 @@
 
 use std::path::{Path, PathBuf};
 
+pub mod cli;
+pub mod live;
+pub mod log;
+pub mod queue;
+pub mod settings;
+pub mod sys;
+pub mod urls;
+
 /// Every state an entry can be in, in the order ytq's window lists them.
 pub const ORDER: [&str; 9] = [
     "downloading",

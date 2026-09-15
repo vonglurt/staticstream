@@ -71,12 +71,29 @@ No `ytq` binary is built yet. `~/.local/bin` comes before `/usr/local/bin`
 on Copal's PATH, so an unfinished Rust `ytq` would hide the working Python
 one. It is added when phase 2's test passes.
 
+Phase 2, ytq in Rust, has begun; `docs/phase-2.md` is the plan. Step 2a is
+done:
+- **What is in it:** the Rust ytq is `sstr ytq`, with `add`, `clip`,
+  `list`, `status`, `clear`, `cookies` and the help.
+- **What it shares:** the Python ytq's `queue.json`, its locks and its log.
+  A runner it starts is the Python one until step 2b.
+- **The test:** `make ytq-crosscheck` agrees with the Python ytq on 32
+  comparisons.
+  - **Links:** 6,466 texts through its link matching.
+  - **Settings:** five homes.
+  - **Queue and panels:** both queue listings and the live status panels.
+  - **Queue file:** a queue file rewritten byte for byte as Python's
+    `json.dump` writes it.
+  - **Concurrency:** thirty simultaneous adds from both.
+  - **Clipboard:** the cases, messages and exit codes.
+
 ## Build
 
 ```sh
 make            # the list
 make check      # no external crates, the tests, an offline release build, the crosscheck
 make crosscheck # sstr against tools/copal-sstr.py in ../copal, comparison by comparison
+make ytq-crosscheck  # sstr ytq against the Python ytq in ../copal/copal-prep.sh
 make run ARGS='play cap.sstr --paced'
 make workspace
 make install    # sstr and sstr-workspace into ~/.local/bin

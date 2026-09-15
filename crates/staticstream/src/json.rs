@@ -107,18 +107,53 @@ impl Value {
     /// One line, as `json.dumps(obj)` writes it: ", " and ": " separators.
     pub fn to_json(&self) -> String {
         let mut s = String::new();
-        self.write(&mut s, None, 0);
+        self.write(&mut s, None, 0, false);
         s
     }
 
     /// Indented by one space a level, as `json.dumps(obj, indent=1)`.
     pub fn to_json_indented(&self) -> String {
         let mut s = String::new();
-        self.write(&mut s, Some(1), 0);
+        self.write(&mut s, Some(1), 0, false);
         s
     }
 
-    fn write(&self, out: &mut String, indent: Option<usize>, level: usize) {
+    /// Exactly as Python's `json.dump(obj, f, indent=n)` writes it: every
+    /// character outside ASCII as `\uXXXX` (a surrogate pair above U+FFFF),
+    /// `\b` and `\f` by name. What ytq's queue.json is, so a file one ytq
+    /// rewrites reads the same to the other, and to a person.
+    pub fn to_python_json(&self, indent: Option<usize>) -> String {
+        let mut s = String::new();
+        self.write(&mut s, indent, 0, true);
+        s
+    }
+
+    fn quote_ascii(s: &str) -> String {
+        let mut out = String::with_capacity(s.len() + 2);
+        out.push('"');
+        for c in s.chars() {
+            match c {
+                '"' => out.push_str("\\\""),
+                '\\' => out.push_str("\\\\"),
+                '\n' => out.push_str("\\n"),
+                '\r' => out.push_str("\\r"),
+                '\t' => out.push_str("\\t"),
+                '\u{8}' => out.push_str("\\b"),
+                '\u{c}' => out.push_str("\\f"),
+                c if (c as u32) < 0x20 || (c as u32) > 0x7e => {
+                    let mut units = [0u16; 2];
+                    for u in c.encode_utf16(&mut units) {
+                        out.push_str(&format!("\\u{:04x}", u));
+                    }
+                }
+                c => out.push(c),
+            }
+        }
+        out.push('"');
+        out
+    }
+
+    fn write(&self, out: &mut String, indent: Option<usize>, level: usize, python: bool) {
         let newline = |out: &mut String, level: usize| {
             if let Some(n) = indent {
                 out.push('\n');
@@ -136,7 +171,7 @@ impl Value {
                     out.push_str(&format!("{n}"));
                 }
             }
-            Value::Str(s) => out.push_str(&Value::quote(s)),
+            Value::Str(s) => out.push_str(&if python { Value::quote_ascii(s) } else { Value::quote(s) }),
             Value::Arr(v) => {
                 if v.is_empty() {
                     out.push_str("[]");
@@ -148,7 +183,7 @@ impl Value {
                         out.push_str(sep);
                     }
                     newline(out, level + 1);
-                    x.write(out, indent, level + 1);
+                    x.write(out, indent, level + 1, python);
                 }
                 newline(out, level);
                 out.push(']');
@@ -164,9 +199,9 @@ impl Value {
                         out.push_str(sep);
                     }
                     newline(out, level + 1);
-                    out.push_str(&Value::quote(k));
+                    out.push_str(&if python { Value::quote_ascii(k) } else { Value::quote(k) });
                     out.push_str(": ");
-                    x.write(out, indent, level + 1);
+                    x.write(out, indent, level + 1, python);
                 }
                 newline(out, level);
                 out.push('}');

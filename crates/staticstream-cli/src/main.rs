@@ -573,6 +573,7 @@ fn main() -> ExitCode {
         Some("unarmor") => cmd_unarmor(rest),
         Some("recv") => cmd_recv(rest),
         Some("paths") => Ok(paths()),
+        Some("ytq") => Ok(staticstream_ytq::cli::main(rest)),
         Some(verb) => Err(format!("no verb '{verb}'\n\n{USAGE}")),
     };
     match result {

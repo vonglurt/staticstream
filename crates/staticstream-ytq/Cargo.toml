@@ -14,3 +14,4 @@ rust-version.workspace = true
 # Copal's PATH, so an unfinished `ytq` there would shadow the working one.
 
 [dependencies]
+staticstream = { path = "../staticstream" }
