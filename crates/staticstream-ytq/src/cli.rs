@@ -292,6 +292,13 @@ fn help(ctx: &Ctx, cmd: &str) -> i32 {
     println!("  --run or --no-run on clip, add or cookies overrides it for that one command");
     let media = &ctx.paths.media_conf;
     println!("media:  {} ({})", ctx.tilde(&media.to_string_lossy()), if media.is_file() { "found, read before the config" } else { "not there" });
+    println!(
+        "archive: OUTPUT={}  ARCHIVE_DIR={}  SSTR_KEY={}",
+        crate::runner::output_of(&ctx.s),
+        ctx.tilde(&crate::runner::archive_dir_of(&ctx.s)),
+        crate::runner::sstr_key_of(&ctx.s, &ctx.home).map(|k| ctx.tilde(&k.to_string_lossy())).unwrap_or_else(|| "(none: captures unsigned)".into())
+    );
+    println!("  OUTPUT=sstr keeps a Static Stream capture and removes the MP4 once the capture verifies; both keeps both; mp4 keeps the MP4 alone");
     if matches!(cmd, "-h" | "--help" | "help") {
         0
     } else {

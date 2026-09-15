@@ -53,6 +53,7 @@ check: deps ## what a commit must pass: no external crates, the tests, an offlin
 	@sh tests/crosscheck.sh
 	@sh tests/ytq-crosscheck.sh
 	@sh tests/ytq-runner-crosscheck.sh
+	@sh tests/ytq-archive-check.sh
 	@printf '  ok      check passed\n'
 
 crosscheck: ## the Rust sstr against tools/copal-sstr.py in ../copal: both directions, damage, armor
@@ -67,6 +68,10 @@ ytq-crosscheck: ## the Rust ytq (sstr ytq) against the Python ytq in ../copal: u
 ytq-runner-crosscheck: ## the Rust runner against the Python ytq's: downloads, stops, cookies, retries, transcripts
 	@$(CARGO) build --release --workspace --offline --locked --quiet
 	@VERBOSE=1 sh tests/ytq-runner-crosscheck.sh
+
+ytq-archive-check: ## the Rust ytq archiving downloads into Static Stream: OUTPUT, ARCHIVE_DIR, SSTR_KEY
+	@$(CARGO) build --release --workspace --offline --locked --quiet
+	@VERBOSE=1 sh tests/ytq-archive-check.sh
 
 # ytq is not installed from here until the Rust ytq does all the Python one
 # does: $(ROOT)/bin comes before /usr/local/bin on Copal's PATH, and would hide it.

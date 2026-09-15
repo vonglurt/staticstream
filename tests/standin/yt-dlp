@@ -141,3 +141,7 @@ for fid, v, a, h, ext, size in reversed(parts):
     out("Deleting original file %s (pass -k to keep)" % (root + ext))
     os.remove(root + ext)
 out("FILE " + final)
+if any(args[i + 1].startswith("after_move:NOTES") for i, a in enumerate(args) if a == "--print"):
+    out("NOTES " + json.dumps({"webpage_url": "https://www.youtube.com/watch?v=" + vid,
+                               "license": "Creative Commons Attribution license (reuse allowed)" if "CC" in vid else None,
+                               "title": title, "uploader": "Fake Uploader", "channel": "Fake"}))

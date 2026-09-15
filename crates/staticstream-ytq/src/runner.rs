@@ -21,6 +21,8 @@ use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use staticstream::json::{self, Value};
+use staticstream::sha256::{hex, Sha256};
+use staticstream::{reader, writer};
 
 use crate::live::{compact, describe, fmt_secs, fmt_size, na, number, py_str, size_of, splitext, stage, stream_of, truthy, PROGRESS_KEYS};
 use crate::log::{log, say, splitlines, Mode};
@@ -122,6 +124,68 @@ pub fn which(name: &str) -> Option<PathBuf> {
     std::env::var_os("PATH")?.to_str()?.split(':').map(|d| Path::new(if d.is_empty() { "." } else { d }).join(name)).find(|p| {
         fs::metadata(p).map_or(false, |m| m.is_file() && m.permissions().mode() & 0o111 != 0)
     })
+}
+
+/// What a finished download leaves, from OUTPUT: `sstr` (the default) keeps a
+/// Static Stream capture and removes the MP4 once the capture checks out;
+/// `both` keeps both; `mp4` leaves what the Python ytq leaves.
+pub fn output_of(s: &BTreeMap<String, String>) -> &'static str {
+    match s.get("OUTPUT").map(|v| v.trim().to_lowercase()).as_deref() {
+        Some("mp4") => "mp4",
+        Some("both") => "both",
+        _ => "sstr",
+    }
+}
+
+/// Where captures go: ARCHIVE_DIR, else DIR.
+pub fn archive_dir_of(s: &BTreeMap<String, String>) -> String {
+    match s.get("ARCHIVE_DIR").filter(|a| !a.trim().is_empty()) {
+        Some(a) => a.clone(),
+        None => s.get("DIR").cloned().unwrap_or_default(),
+    }
+}
+
+/// The key captures are signed with: SSTR_KEY, or ~/.ssh/id_ed25519 when it
+/// exists and SSTR_KEY is not set at all. `SSTR_KEY=` with nothing after it
+/// means unsigned.
+pub fn sstr_key_of(s: &BTreeMap<String, String>, home: &Path) -> Option<PathBuf> {
+    match s.get("SSTR_KEY") {
+        Some(k) if k.trim().is_empty() => None,
+        Some(k) => Some(PathBuf::from(k)),
+        None => Some(home.join(".ssh").join("id_ed25519")).filter(|k| k.exists()),
+    }
+}
+
+/// A capture's content type, from the downloaded file's extension.
+pub fn content_type(path: &str) -> &'static str {
+    match splitext(path).1.to_lowercase().as_str() {
+        ".mp4" | ".m4v" => "video/mp4",
+        ".webm" => "video/webm",
+        ".mkv" => "video/x-matroska",
+        ".mov" => "video/quicktime",
+        ".m4a" => "audio/mp4",
+        ".mp3" => "audio/mpeg",
+        ".opus" | ".ogg" => "audio/ogg",
+        _ => "application/octet-stream",
+    }
+}
+
+/// What yt-dlp prints after the move when a capture will be made: the fields
+/// its header carries.
+pub const NOTES_PRINT: &str = "after_move:NOTES %(.{webpage_url,license,title,uploader,channel})j";
+
+fn file_sha256(path: &str) -> io::Result<String> {
+    let mut f = fs::File::open(path)?;
+    let mut h = Sha256::new();
+    let mut buf = vec![0u8; 1 << 16];
+    loop {
+        let n = f.read(&mut buf)?;
+        if n == 0 {
+            break;
+        }
+        h.update(&buf[..n]);
+    }
+    Ok(hex(&h.finish()))
 }
 
 pub fn cookie_problem(text: &str) -> bool {
@@ -250,7 +314,7 @@ impl Runner {
             .unwrap_or_else(|| "?".into());
         let subs = self.setting("SUBS");
         self.log(&format!(
-            "runner '{}' took run.lock: ytq {} of {}, yt-dlp {}, sstr {}; DIR={} FORMAT={} SUBS={} PROFILE={}; /etc/yt-dlp.conf {}",
+            "runner '{}' took run.lock: ytq {} of {}, yt-dlp {}, sstr {}; DIR={} FORMAT={} SUBS={} PROFILE={}; OUTPUT={} ARCHIVE_DIR={} SSTR_KEY={}; /etc/yt-dlp.conf {}",
             if argv.is_empty() { "window" } else { argv },
             me,
             mtime,
@@ -260,6 +324,9 @@ impl Runner {
             self.setting("FORMAT"),
             if subs.is_empty() { "(off)".to_string() } else { subs },
             self.setting("PROFILE"),
+            output_of(&self.s),
+            archive_dir_of(&self.s),
+            sstr_key_of(&self.s, &self.home).map(|k| k.to_string_lossy().into_owned()).unwrap_or_else(|| "(unsigned)".into()),
             if Path::new("/etc/yt-dlp.conf").exists() { "present" } else { "absent" }
         ));
     }
@@ -362,9 +429,19 @@ impl Runner {
         }
         let format = self.s.get("FORMAT").cloned().unwrap_or_else(|| DEFAULT_FORMAT.into());
         let out_tmpl = format!("{}/{}", dir.replace('%', "%%").trim_end_matches('/'), NAME);
-        for a in ["--no-playlist", "--newline", "--no-simulate", "-f", &format, "--merge-output-format", "mp4", "--progress", "--no-quiet", "--progress-template", &progress_template(), "--print", "after_move:FILE %(filepath)s", "-o", &out_tmpl, &url] {
+        for a in ["--no-playlist", "--newline", "--no-simulate", "-f", &format, "--merge-output-format", "mp4", "--progress", "--no-quiet", "--progress-template", &progress_template(), "--print", "after_move:FILE %(filepath)s"] {
             cmd.push(a.to_string());
         }
+        // A capture's header wants the source, the license and who made it.
+        // Only asked for when a capture will be made: with OUTPUT=mp4 the
+        // command is the Python ytq's, argument for argument.
+        if output_of(&self.s) != "mp4" {
+            cmd.push("--print".into());
+            cmd.push(NOTES_PRINT.into());
+        }
+        cmd.push("-o".into());
+        cmd.push(out_tmpl.clone());
+        cmd.push(url.clone());
         self.log(&format!("{tag}: attempt {} at {title}{}, into {dir}", py_str(&Value::Num(attempts)), if with_cookies { " with Brave's cookies" } else { "" }));
         self.log(&format!("run: {}", cmd.iter().map(|c| shlex_quote(c)).collect::<Vec<_>>().join(" ")));
         let started = sys::now();
@@ -417,6 +494,7 @@ impl Runner {
         });
         let mut tail: Vec<String> = Vec::new();
         let mut fname = String::new();
+        let mut notes = Value::Obj(Vec::new());
         let mut wrote = 0.0;
         let mut sampled = started;
         loop {
@@ -456,6 +534,10 @@ impl Runner {
                 } else if now - sampled >= 30.0 {
                     sampled = now;
                     self.log(&format!("{tag}: {}, {}, {}", compact(&live), stream_of(&live), size_of(&live)));
+                }
+            } else if let Some(n) = line.strip_prefix("NOTES ").filter(|_| output_of(&self.s) != "mp4") {
+                if let Ok(v) = json::parse(n) {
+                    notes = v;
                 }
             } else if let Some(f) = line.strip_prefix("FILE ") {
                 fname = f.to_string();
@@ -521,10 +603,45 @@ impl Runner {
             if let Ok(m) = fs::metadata(&fname) {
                 self.log(&format!("{tag}: {fname} is {}", fmt_size(m.len() as f64)));
             }
+            // Static Stream. With OUTPUT=sstr (the default) or both, the download
+            // is recorded into ARCHIVE_DIR and read back; with sstr the MP4 goes
+            // only once the capture verifies and its payload is the MP4 byte for
+            // byte. Anything short of that keeps the MP4, and says why.
+            let output = output_of(&self.s);
+            let mut kept = fname.clone();
+            let mut video = basename(&fname).to_string();
+            let mut stem = splitext(&fname).0.to_string();
+            let mut not_archived = String::new();
+            if !fname.is_empty() && output != "mp4" {
+                let sstr = format!("{}/{}.sstr", archive_dir_of(&self.s).trim_end_matches('/'), basename(splitext(&fname).0));
+                live.set("phase", Value::str("archiving to Static Stream"));
+                live.set("since", Value::Num(sys::now()));
+                live.set("last", Value::str(""));
+                live.set("dest", Value::str(&sstr));
+                self.update(&url, vec![("progress", Value::str("archiving")), ("live", live.clone())]);
+                match self.archive(&tag, &url, &fname, &sstr, &notes) {
+                    Ok(()) => {
+                        stem = splitext(&sstr).0.to_string();
+                        if output == "sstr" {
+                            match fs::remove_file(&fname) {
+                                Ok(()) => {
+                                    self.log(&format!("{tag}: removed {fname}: the capture holds it"));
+                                    kept = sstr.clone();
+                                    video = basename(&sstr).to_string();
+                                }
+                                Err(e) => self.log(&format!("{tag}: could not remove {fname}: {e}")),
+                            }
+                        }
+                    }
+                    Err(why) => {
+                        self.log(&format!("{tag}: not archived, so the MP4 stays: {why}"));
+                        not_archived = format!(" (not archived: {why})");
+                    }
+                }
+            }
             let mut also = "";
             let subs = self.setting("SUBS");
             if !fname.is_empty() && !subs.is_empty() && first_id(&url).is_some() {
-                let stem = splitext(&fname).0.to_string();
                 live.set("phase", Value::str("fetching the transcript"));
                 live.set("since", Value::Num(sys::now()));
                 live.set("last", Value::str(""));
@@ -532,7 +649,7 @@ impl Runner {
                 if self.update(&url, vec![("progress", Value::str("transcript")), ("live", live.clone())]).is_some() {
                     let tmpl = format!("{}.%(ext)s", stem.replace('%', "%%"));
                     let tcmd = if with_cookies { brave_cmd(&self.s) } else { vec!["yt-dlp".into()] };
-                    match self.transcript(&url, &tmpl, &tcmd, Some(basename(&fname))) {
+                    match self.transcript(&url, &tmpl, &tcmd, Some(&video)) {
                         Ok(txt) => {
                             self.log(&format!("{tag}: transcript: {txt}"));
                             also = " + transcript";
@@ -544,8 +661,8 @@ impl Runner {
                     }
                 }
             }
-            if self.update(&url, vec![("status", Value::str("done")), ("file", Value::str(&fname)), ("progress", Value::str("")), ("error", Value::str("")), ("live", Value::Obj(Vec::new()))]).is_some() {
-                self.say(&format!("done: {}{also}", if fname.is_empty() { title.as_str() } else { basename(&fname) }), false);
+            if self.update(&url, vec![("status", Value::str("done")), ("file", Value::str(&kept)), ("progress", Value::str("")), ("error", Value::str("")), ("live", Value::Obj(Vec::new()))]).is_some() {
+                self.say(&format!("done: {}{also}{not_archived}", if kept.is_empty() { title.as_str() } else { basename(&kept) }), false);
             }
             return End::Finished;
         }
@@ -565,6 +682,68 @@ impl Runner {
             self.say(&format!("failed: {title} -- {err}"), true);
         }
         End::Finished
+    }
+
+    /// Record a finished download into a Static Stream capture at `sstr`, read
+    /// it back, and keep it only if it verifies and plays back as the file.
+    fn archive(&self, tag: &str, url: &str, file: &str, sstr: &str, notes: &Value) -> Result<(), String> {
+        let t0 = sys::now();
+        if let Some(dir) = Path::new(sstr).parent() {
+            fs::create_dir_all(dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
+        }
+        let part = format!("{sstr}.part");
+        let pick = |k: &str| notes.get(k).filter(|v| truthy(Some(v))).map(py_str);
+        let mut meta = Value::obj(vec![
+            ("created", Value::str(sys::strftime_local("%Y-%m-%dT%H:%M:%S%z", sys::now()))),
+            ("content_type", Value::str(content_type(file))),
+            ("chunk", Value::num(65536)),
+            ("align", Value::num(1)),
+            ("fec", Value::obj(vec![("inner", Value::str("RS(255,223) GF(2^8)/0x11d, interleaved per record")), ("outer", Value::str("XOR, one per 16 data records"))])),
+            ("checkpoint", Value::obj(vec![("records", Value::num(64)), ("seconds", Value::Num(10.0))])),
+            ("source", Value::str(pick("webpage_url").unwrap_or_else(|| url.to_string()))),
+        ]);
+        if let Some(license) = pick("license") {
+            meta.set("license", Value::str(license));
+        }
+        if let Some(t) = pick("title") {
+            meta.set("note", Value::str(match pick("uploader").or_else(|| pick("channel")) {
+                Some(by) => format!("{t} by {by}"),
+                None => t,
+            }));
+        }
+        let key = sstr_key_of(&self.s, &self.home);
+        self.log(&format!(
+            "{tag}: archiving {file} into {sstr}, {}",
+            key.as_ref().map(|k| format!("signed with {}", k.display())).unwrap_or_else(|| "unsigned".into())
+        ));
+        let opts = writer::Options { key, deflate: self.setting("SSTR_DEFLATE").trim().eq_ignore_ascii_case("yes"), ..Default::default() };
+        let fail = |why: String| {
+            let _ = fs::remove_file(&part);
+            why
+        };
+        let written = writer::record_file(Path::new(file), Path::new(&part), meta, opts).map_err(|e| fail(format!("recording failed: {e}")))?;
+        let want = file_sha256(file).map_err(|e| fail(format!("cannot read {file}: {e}")))?;
+        match reader::check_file(Path::new(&part)) {
+            Ok((0, payload, _)) if payload == want => {}
+            Ok((0, _, _)) => return Err(fail("the capture plays back as something other than the file".into())),
+            Ok((code, _, st)) => {
+                return Err(fail(format!("the capture does not verify (exit {code}: {} data records lost, {} mismatched, {} bad signatures)", st.data_lost, st.mismatched, st.sig_bad)))
+            }
+            Err(e) => return Err(fail(format!("cannot read the capture back: {e}"))),
+        }
+        fs::rename(&part, sstr).map_err(|e| fail(format!("cannot rename {part}: {e}")))?;
+        let size = fs::metadata(sstr).map(|m| m.len() as f64).unwrap_or(0.0);
+        let orig = fs::metadata(file).map(|m| m.len() as f64).unwrap_or(0.0);
+        self.log(&format!(
+            "{tag}: archived {sstr}: {} data records, {} for {} ({:.1} %), read back and verified in {}; its payload's SHA-256 is the file's, {}",
+            written.data_records,
+            fmt_size(size),
+            fmt_size(orig),
+            if orig > 0.0 { size * 100.0 / orig } else { 0.0 },
+            fmt_secs(sys::now() - t0),
+            &want[..16]
+        ));
+        Ok(())
     }
 
     /// `stop_current(why)`: kill the download under way and put its entry back as it was.

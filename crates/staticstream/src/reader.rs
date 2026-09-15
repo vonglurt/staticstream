@@ -770,6 +770,15 @@ impl Drop for TempDir {
     }
 }
 
+/// Read a capture through, as `sstr verify` does: its exit status (0 when
+/// everything checked out), its payload's SHA-256 in hex, and what was found.
+pub fn check_file(path: &Path) -> io::Result<(i32, String, Stats)> {
+    let file = std::fs::File::open(path)?;
+    let mut r = Reader::new(Source::new(file, false, Rc::new(RefCell::new(Erasures::new()))), None, Options::default());
+    r.run()?;
+    Ok((r.status(), r.payload_hex(), r.s.clone()))
+}
+
 /// The stream header of a capture file, from its first records.
 pub fn read_meta(path: &Path) -> Option<Value> {
     let file = std::fs::File::open(path).ok()?;

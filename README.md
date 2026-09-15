@@ -109,6 +109,25 @@ A runner that `add` or `clip` starts is now the Rust one.
 - **A real download of `jNQXAC9IVRw`:** the same file name, MP4 tags,
   transcript Notes and queue entry.
 
+Step 2c is done: what ytq downloads, it keeps as Static Stream.
+- **`OUTPUT`:** `sstr` (the default) records the MP4 into a `.sstr`, reads
+  it back, and removes the MP4 only once the capture verifies and its
+  payload's SHA-256 is the MP4's. `both` keeps both; `mp4` keeps what the
+  Python ytq keeps, and asks yt-dlp nothing more.
+- **`ARCHIVE_DIR`:** where captures and their transcripts go; `DIR` when unset.
+- **`SSTR_KEY`:** the key captures are signed with; `~/.ssh/id_ed25519` when
+  unset and present; `SSTR_KEY=` for unsigned.
+- **The header:** the source page, the license the site states, and
+  "title by author".
+- **When archiving fails:** the MP4 stays, the entry is still done, and the
+  notification says why.
+
+`make ytq-archive-check` passes 34 checks. The captures play back byte for
+byte as the MP4, they are signed and trusted through `--allowed-signers`, and
+real downloads work in both `both` and `sstr` modes.
+`ytq-runner-crosscheck` still agrees with the Python ytq on 50 comparisons,
+with `OUTPUT=mp4`.
+
 ## Build
 
 ```sh

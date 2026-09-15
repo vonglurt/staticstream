@@ -206,6 +206,39 @@ impl<W: Write> Writer<W> {
     }
 }
 
+/// Record a whole file into a capture, in 64 KiB records, and close it: what
+/// `sstr record OUT --input FILE` does, for a caller that has a file rather
+/// than a stream -- ytq archiving a download.
+pub fn record_file(input: &Path, output: &Path, meta: Value, opts: Options) -> io::Result<Written> {
+    let mut inp = std::fs::File::open(input)?;
+    let out = io::BufWriter::new(std::fs::File::create(output)?);
+    let mut w = Writer::new(out, meta, opts)?;
+    let mut buf = vec![0u8; 65536];
+    loop {
+        let mut n = 0;
+        while n < buf.len() {
+            match inp.read(&mut buf[n..]) {
+                Ok(0) => break,
+                Ok(k) => n += k,
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => continue,
+                Err(e) => return Err(e),
+            }
+        }
+        if n == 0 {
+            break;
+        }
+        let t_us = w.started().elapsed().as_micros() as u64;
+        w.data(&buf[..n], t_us)?;
+        if n < buf.len() {
+            break;
+        }
+    }
+    let (out, written) = w.finish(false)?;
+    let file = out.into_inner().map_err(|e| e.into_error())?;
+    file.sync_all()?;
+    Ok(written)
+}
+
 fn random_id() -> io::Result<[u8; 16]> {
     let mut id = [0u8; 16];
     std::fs::File::open("/dev/urandom")?.read_exact(&mut id)?;
