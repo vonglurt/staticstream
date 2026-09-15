@@ -15,17 +15,20 @@
 #   4. The clipboard: clip on a bookmarks excerpt, a plain URL and plain words,
 #      with the same queue, message and exit.
 #
-# The Python ytq is cut from ../copal/copal-prep.sh (or $STATICSTREAM_COPAL),
-# so it is the one a clean install writes. Every run has its own HOME, and
-# stub wl-paste, xclip and notify-send, so the real clipboard, queue and
-# notifications are never touched.
+# The Python ytq is tests/reference/ytq.py, the file a clean Copal install
+# wrote, frozen when step 2e retired it from copal-prep.sh. Every run has its
+# own HOME, and stub wl-paste, xclip and notify-send, so the real clipboard,
+# queue and notifications are never touched.
 
 set -u
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-COPAL=${STATICSTREAM_COPAL:-$ROOT/../copal}
+SPEC=${SPEC:-$ROOT/tests/reference/ytq.py}
 SSTR=${SSTR:-$ROOT/target/release/sstr}
+# The ytq under test: the binary, or `sstr ytq`. Left unquoted where it is
+# called, so that the two words of the default split into two.
+YTQ=${YTQ:-$SSTR ytq}
 
-[ -f "$COPAL/copal-prep.sh" ] || { printf '  --      ytq-crosscheck skipped: no copal checkout at %s\n' "$COPAL"; exit 0; }
+[ -f "$SPEC" ] || { printf '  --      ytq-crosscheck skipped: no specification at %s\n' "$SPEC"; exit 0; }
 command -v python3 >/dev/null 2>&1 || { printf '  --      ytq-crosscheck skipped: no python3\n'; exit 0; }
 [ -x "$SSTR" ] || { printf 'ytq-crosscheck: no %s -- make build\n' "$SSTR"; exit 2; }
 
@@ -39,8 +42,8 @@ same() { # <label> <file a> <file b>
     if cmp -s "$2" "$3"; then ok "$1"; else bad "$1:"; diff -u "$2" "$3" | head -20 | sed 's/^/          /'; fi
 }
 
-awk '/cat > \/usr\/local\/bin\/ytq <<.YTQ./{f=1;next} /^YTQ$/{f=0} f' "$COPAL/copal-prep.sh" > "$W/ytq.py"
-[ -s "$W/ytq.py" ] || { bad "could not cut the Python ytq out of copal-prep.sh"; exit 1; }
+cp "$SPEC" "$W/ytq.py"
+[ -s "$W/ytq.py" ] || { bad "the specification at $SPEC is empty"; exit 1; }
 
 STUB="$W/stub"
 mkdir -p "$STUB"
@@ -51,10 +54,10 @@ chmod +x "$STUB"/*
 
 # py|rs <home> args...: one ytq or the other, in that home, with the stubs.
 py() { h=$1; shift; env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$h" PATH="$STUB:$PATH" YTQ_NOTIFY="$h/notify" PYTHONIOENCODING=utf-8 python3 "$W/ytq.py" "$@"; }
-rs() { h=$1; shift; env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$h" PATH="$STUB:$PATH" YTQ_NOTIFY="$h/notify" "$SSTR" ytq "$@"; }
+rs() { h=$1; shift; env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$h" PATH="$STUB:$PATH" YTQ_NOTIFY="$h/notify" $YTQ "$@"; }
 home() { d="$W/home-$1"; rm -rf "$d"; mkdir -p "$d"; echo "$d"; }
 
-echo "  --      ytq-crosscheck: $SSTR ytq against the ytq in $COPAL/copal-prep.sh"
+echo "  --      ytq-crosscheck: $YTQ against $SPEC"
 
 # 1. Which text is a video ---------------------------------------------------
 H=$(home urls)

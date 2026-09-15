@@ -28,11 +28,14 @@
 
 set -u
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-COPAL=${STATICSTREAM_COPAL:-$ROOT/../copal}
+SPEC=${SPEC:-$ROOT/tests/reference/ytq.py}
 SSTR=${SSTR:-$ROOT/target/release/sstr}
+# The ytq under test: the binary, or `sstr ytq`. Left unquoted where it is
+# called, so that the two words of the default split into two.
+YTQ=${YTQ:-$SSTR ytq}
 
 skip() { printf '  --      ytq-window-crosscheck skipped: %s\n' "$1"; exit 0; }
-[ -f "$COPAL/copal-prep.sh" ] || skip "no copal checkout at $COPAL"
+[ -f "$SPEC" ] || skip "no specification at $SPEC"
 command -v python3 >/dev/null 2>&1 || skip "no python3"
 python3 -c 'import curses' 2>/dev/null || skip "no curses in python3"
 command -v tmux >/dev/null 2>&1 || skip "no tmux"
@@ -58,7 +61,7 @@ set -g window-size manual
 set -g remain-on-exit off
 EOF
 
-awk '/cat > \/usr\/local\/bin\/ytq <<.YTQ./{f=1;next} /^YTQ$/{f=0} f' "$COPAL/copal-prep.sh" > "$W/ytq.py"
+cp "$SPEC" "$W/ytq.py"
 
 STUB="$W/stub"
 mkdir -p "$STUB"
@@ -94,7 +97,7 @@ wait_for() { n=0; while [ ! -e "$1" ] && [ $n -lt 400 ]; do sleep 0.05; n=$((n +
 window() {
     s=$1 side=$2 h=$3 cols=$4 rows=$5
     shift 5
-    if [ "$side" = py ]; then prog="python3 '$W/ytq.py'"; else prog="'$SSTR' ytq"; fi
+    if [ "$side" = py ]; then prog="python3 '$W/ytq.py'"; else prog="$YTQ"; fi
     T new-session -d -s "$s" -x "$cols" -y "$rows" \
         "env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u XDG_STATE_HOME -u DISPLAY -u WAYLAND_DISPLAY -u HYPRLAND_INSTANCE_SIGNATURE -u DBUS_SESSION_BUS_ADDRESS HOME='$h' PATH='$STUB:$PATH' TERM=xterm-256color PYTHONIOENCODING=utf-8 $* $prog 2>> '$h/window.err'"
 }
@@ -151,14 +154,14 @@ norm_log() {
         -e 's/took [0-9:]+\)/took T)/g' -e 's/, [0-9:]+ in([,;])/, T in\1/' "$1/.local/share/ytq/ytq.log" 2>/dev/null
 }
 
-echo "  --      ytq-window-crosscheck: $SSTR ytq beside the ytq window in $COPAL/copal-prep.sh, in tmux $(tmux -V | cut -d' ' -f2)"
+echo "  --      ytq-window-crosscheck: $YTQ beside the window of $SPEC, in tmux $(tmux -V | cut -d' ' -f2)"
 
 # The live records come from a real run against the stand-in: one entry
 # mid-part, the same one mid-merge.
 S=$(home setup)
 mkdir -p "$S/gates"
-env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$S" PATH="$STUB:$PATH" "$SSTR" ytq add --no-run 'https://www.youtube.com/watch?v=GATEDAAAAAA' > /dev/null 2>&1
-env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$S" PATH="$STUB:$PATH" STANDIN_GATES="$S/gates" "$SSTR" ytq run --quiet > "$S/run.out" 2>&1 &
+env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$S" PATH="$STUB:$PATH" $YTQ add --no-run 'https://www.youtube.com/watch?v=GATEDAAAAAA' > /dev/null 2>&1
+env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$S" PATH="$STUB:$PATH" STANDIN_GATES="$S/gates" $YTQ run --quiet > "$S/run.out" 2>&1 &
 RUNNER=$!
 wait_for "$S/gates/at.1" || bad "setup: the stand-in never reached gate 1"
 sleep 1.3; cp "$(Q "$S")" "$W/part.json"; touch "$S/gates/go.1"

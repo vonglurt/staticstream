@@ -47,21 +47,27 @@ deps: ## prove Cargo.lock names no crate from outside this repository
 	    grep -B2 '^source = ' Cargo.lock | sed -n 's/^name = /  /p'; exit 1; fi
 	@printf '  ok      no external crates: %s packages, all in this workspace\n' "$$(grep -c '^name = ' Cargo.lock)"
 
+# The ytq crosschecks run against the binary, not `sstr ytq`: step 2e's bar is
+# that the whole crosscheck passes with `ytq` in the Python one's place, so
+# that is what a commit must pass. Run by hand (make ytq-crosscheck) they take
+# their default and exercise `sstr ytq` instead, so both spellings are covered.
+YTQ_BIN = $(CURDIR)/target/release/ytq
+
 check: deps ## what a commit must pass: no external crates, the tests, an offline release build, the crosscheck
 	$(CARGO) test --workspace --offline --locked --quiet
 	$(CARGO) build --release --workspace --offline --locked
 	@sh tests/crosscheck.sh
-	@sh tests/ytq-crosscheck.sh
-	@sh tests/ytq-runner-crosscheck.sh
-	@sh tests/ytq-archive-check.sh
-	@sh tests/ytq-window-crosscheck.sh
+	@YTQ='$(YTQ_BIN)' sh tests/ytq-crosscheck.sh
+	@YTQ='$(YTQ_BIN)' sh tests/ytq-runner-crosscheck.sh
+	@YTQ='$(YTQ_BIN)' sh tests/ytq-archive-check.sh
+	@YTQ='$(YTQ_BIN)' sh tests/ytq-window-crosscheck.sh
 	@printf '  ok      check passed\n'
 
 crosscheck: ## the Rust sstr against tools/copal-sstr.py in ../copal: both directions, damage, armor
 	@$(CARGO) build --release --workspace --offline --locked --quiet
 	@VERBOSE=1 sh tests/crosscheck.sh
 
-ytq-crosscheck: ## the Rust ytq (sstr ytq) against the Python ytq in ../copal: urls, settings, queue, clipboard
+ytq-crosscheck: ## the Rust ytq against the Python ytq of tests/reference: urls, settings, queue, clipboard
 	@$(CARGO) build --release --workspace --offline --locked --quiet
 	@VERBOSE=1 sh tests/ytq-crosscheck.sh
 
@@ -79,11 +85,14 @@ ytq-window-crosscheck: ## the Rust window beside the Python ytq's curses window,
 	@$(CARGO) build --release --workspace --offline --locked --quiet
 	@VERBOSE=1 sh tests/ytq-window-crosscheck.sh
 
-# ytq is not installed from here until the Rust ytq does all the Python one
-# does: $(ROOT)/bin comes before /usr/local/bin on Copal's PATH, and would hide it.
-install: ## sstr and sstr-workspace into ~/.local/bin (ROOT=DIR for DIR/bin)
+# ytq is installed from here since step 2e: it does everything the Python one
+# did, and that one is retired from copal-prep.sh. $(ROOT)/bin comes before
+# /usr/local/bin on Copal's PATH, so this is the ytq that Super+Shift+Y and
+# every `ytq` typed in a shell now reach.
+install: ## sstr, sstr-workspace and ytq into ~/.local/bin (ROOT=DIR for DIR/bin)
 	$(CARGO) install --locked --offline --root $(ROOT) --path crates/staticstream-cli
 	$(CARGO) install --locked --offline --root $(ROOT) --path crates/staticstream-workspace
+	$(CARGO) install --locked --offline --root $(ROOT) --path crates/staticstream-ytq
 
 tools: ## cargo-make and cargo-zigbuild, for make dist: apk on Alpine, else cargo install
 	@if command -v apk >/dev/null 2>&1; then doas apk add cargo-make cargo-zigbuild; \

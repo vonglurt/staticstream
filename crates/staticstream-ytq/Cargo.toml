@@ -8,10 +8,18 @@ authors.workspace = true
 repository.workspace = true
 rust-version.workspace = true
 
-# A library until it matches the Python ytq Copal installs. The binary `ytq`
-# is added then, and not before: ~/.local/bin, where make install and
-# copal-build put what this workspace builds, comes before /usr/local/bin on
-# Copal's PATH, so an unfinished `ytq` there would shadow the working one.
+# The binary `ytq` is built from step 2e of docs/phase-2.md, and was not built
+# before it: ~/.local/bin, where make install and copal-build put what this
+# workspace builds, comes before /usr/local/bin on Copal's PATH, so an
+# unfinished `ytq` here would have shadowed the working Python one on every
+# node. It does everything the Python ytq did now, and that one is retired.
+#
+# The crate stays a library too: `sstr ytq` runs the same `cli::main`, so the
+# command and the binary cannot drift apart.
+
+[[bin]]
+name = "ytq"
+path = "src/main.rs"
 
 [dependencies]
 staticstream = { path = "../staticstream" }

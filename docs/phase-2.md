@@ -60,8 +60,9 @@ These come from the project report, V-C and V-D:
 
 ## Side by side, safely
 
-- **No binary called `ytq`** exists until the last step. The Rust ytq is
-  `sstr ytq …`: `sstr ytq add`, `sstr ytq list` and the rest.
+- **No binary called `ytq`** existed until the last step. Until 2e the Rust
+  ytq was `sstr ytq …`: `sstr ytq add`, `sstr ytq list` and the rest. Step 2e
+  built the binary, and `sstr ytq` still runs the same `cli::main`.
 - **Same files, same locks, same formats.**
   - It reads and writes `queue.json` exactly as the Python one does:
     `json.dump(indent=1)`, ASCII-escaped, through a rename.
@@ -82,7 +83,7 @@ These come from the project report, V-C and V-D:
 | 2b | `check`, `claim`, `download` with the live record, stops, retries and the cookie flow; `transcript` and `notes`; `run`, `cookies`, `transcript`; the runner starts itself | against the ytq report's stand-in yt-dlp, the same queue states, log steps and `status` panels as the Python ytq; SIGTERM puts the entry back; a real download of `jNQXAC9IVRw` gives the same file name, tags and `.txt` Notes. **Done**: `make ytq-runner-crosscheck`, 50 of 50 comparisons agree, the real download among them |
 | 2c | `OUTPUT`, `ARCHIVE_DIR`, `SSTR_KEY`: archiving to `.sstr` in-process | a queued video with `OUTPUT=sstr` leaves a `.sstr` that verifies and plays back identical to the MP4 (kept for the test with `OUTPUT=both`); `OUTPUT=mp4` leaves exactly what the Python ytq leaves. **Done**: `make ytq-archive-check`, 34 of 34 checks pass, real downloads in `both` and `sstr` among them; `ytq-runner-crosscheck` holds `OUTPUT=mp4` to the Python ytq, 50 of 50 |
 | 2d | the window: raw terminal without curses, the watcher and focus, the worker, the keys | a tmux run beside the Python window shows the same header, list and live panel for the same queue, and each key does the same thing to `queue.json`. **Done**: `make ytq-window-crosscheck`, 133 of 133 comparisons agree -- screens cell by cell at three sizes, 27 keys and sequences against `queue.json`, the log and the browser, the window's own download stopped by q mid-merge, and focus under Hyprland |
-| 2e | the binary `ytq`; Super+Shift+Y reaches it; the Python ytq retired from `copal-prep.sh` | the whole crosscheck passes with `ytq` in place of `sstr ytq`, on the guest, with the Python ytq gone |
+| 2e | the binary `ytq`; Super+Shift+Y reaches it; the Python ytq retired from `copal-prep.sh` | the whole crosscheck passes with `ytq` in place of `sstr ytq`, on the guest, with the Python ytq gone. **Done**: `make check` runs all four ytq harnesses against `target/release/ytq` and passes -- 76 unit tests, 44 + 32 + 50 comparisons, 34 checks and 133 comparisons, 293 in all; `copal-prep.sh` is 1,466 lines lighter and writes no ytq |
 
 ## Decisions already made
 
@@ -101,3 +102,14 @@ These come from the project report, V-C and V-D:
   the entry put back, run.lock let go. The Python window dies of them,
   leaving yt-dlp running and the entry `downloading` until the next runner
   finds it. This is the one place step 2d does not copy the Python ytq.
+- **The specification is vendored, not cut.** Until 2e each harness cut the
+  Python ytq out of `copal-prep.sh` on every run. 2e retires it from there,
+  so it is frozen at `tests/reference/ytq.py` instead -- byte for byte the
+  file a clean install wrote, from copal `6d557cd`. The comparisons then
+  need no second checkout, work offline on any node, and cannot drift. The
+  price is a Python file in a Rust repository, which 1,436 lines of hard-won
+  behaviour earn.
+- **One binary, two names.** `ytq` and `sstr ytq` are the same `cli::main`.
+  `runner_command()` looks at its own file name, so a runner started by the
+  binary is `ytq run --quiet` and one started by the command is
+  `sstr ytq run --quiet`.

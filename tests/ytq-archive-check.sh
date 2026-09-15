@@ -22,6 +22,10 @@
 set -u
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 SSTR=${SSTR:-$ROOT/target/release/sstr}
+# The ytq under test: the binary, or `sstr ytq`. Left unquoted where it is
+# called, so that the two words of the default split into two. $SSTR itself
+# stays, for record, play and verify.
+YTQ=${YTQ:-$SSTR ytq}
 [ -x "$SSTR" ] || { printf 'ytq-archive-check: no %s -- make build\n' "$SSTR"; exit 2; }
 command -v python3 >/dev/null 2>&1 || { printf '  --      ytq-archive-check skipped: no python3 for the stand-in yt-dlp\n'; exit 0; }
 
@@ -42,7 +46,7 @@ printf '#!/bin/sh\nfor last; do :; done\nprintf "%%s\\n" "$last" >> "$HOME/notif
 chmod +x "$STUB"/*
 
 # ytq <home> <path-dir> args...
-ytq() { h=$1 p=$2; shift 2; env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$h" PATH="$p:$PATH" "$SSTR" ytq "$@"; }
+ytq() { h=$1 p=$2; shift 2; env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$h" PATH="$p:$PATH" $YTQ "$@"; }
 # home <name> <config lines...>
 home() {
     d="$W/$1"; shift; rm -rf "$d"; mkdir -p "$d/.config/ytq" "$d/out"
@@ -57,7 +61,7 @@ fetch() { # <home> <id> [path]: add and run one video
 entry() { python3 -c 'import json,sys; i=json.load(open(sys.argv[1]))[0]; print(i["status"], i["file"].replace(sys.argv[2], "HOME"))' "$1/.local/share/ytq/queue.json" "$1"; }
 files() { (cd "$1" && ls -A | tr '\n' ' '); }
 
-echo "  --      ytq-archive-check: $SSTR ytq, archiving to Static Stream"
+echo "  --      ytq-archive-check: $YTQ, archiving to Static Stream"
 
 # both
 H=$(home both OUTPUT=both); N=Fake-Fake_Title_ARCHIVEAAAA

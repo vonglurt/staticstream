@@ -181,14 +181,30 @@ impl RunLock {
     }
 }
 
-/// What starts a background runner: this program's own `ytq run --quiet`.
+/// What starts a background runner: this program's own `run --quiet`.
 /// $STATICSTREAM_YTQ_RUNNER overrides it, for tests.
+///
+/// Run as `ytq` the subcommand is not repeated, and run as `sstr` it is:
+/// `ytq run --quiet` from the binary, `sstr ytq run --quiet` from the command.
+/// Both reach the same `cli::main`, so a runner one started is the other's too.
 fn runner_command() -> Vec<String> {
     match std::env::var("STATICSTREAM_YTQ_RUNNER") {
         Ok(cmd) if !cmd.trim().is_empty() => cmd.split_whitespace().map(str::to_string).collect(),
         _ => {
-            let me = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "sstr".into());
-            vec![me, "ytq".into(), "run".into(), "--quiet".into()]
+            let exe = std::env::current_exe().ok();
+            let is_ytq = exe
+                .as_deref()
+                .and_then(|p| p.file_name())
+                .map(|n| n.to_string_lossy() == "ytq")
+                .unwrap_or(false);
+            let me = exe.map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|| "sstr".into());
+            let mut cmd = vec![me];
+            if !is_ytq {
+                cmd.push("ytq".into());
+            }
+            cmd.push("run".into());
+            cmd.push("--quiet".into());
+            cmd
         }
     }
 }

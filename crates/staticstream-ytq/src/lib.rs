@@ -158,21 +158,19 @@ mod tests {
         assert!(!HISTORY.contains(&"cookies") && !PENDING.contains(&"cookies"));
     }
 
-    /// The Python ytq is the definition until this crate replaces it, so its
-    /// source is checked for the paths and states copied here. The copal
-    /// checkout is found beside this one in ~/code, or at $STATICSTREAM_YTQ
-    /// (the installed /usr/local/bin/ytq will do); without either the test
-    /// says so and passes.
+    /// The Python ytq is the definition this crate was written against, so its
+    /// source is checked for the paths and states copied here. Step 2e retired
+    /// it from copal-prep.sh, where this used to read it, and froze it at
+    /// tests/reference/ytq.py, which is where it is read from now.
+    /// $STATICSTREAM_YTQ names another copy instead. There is deliberately no
+    /// fallback to /usr/local/bin/ytq: that one is the file 2e removes, and a
+    /// test that quietly falls back to a stale reference passes for the wrong
+    /// reason.
     #[test]
     fn matches_the_python_ytq() {
         let candidates: Vec<PathBuf> = std::env::var_os("STATICSTREAM_YTQ")
             .map(|p| vec![PathBuf::from(p)])
-            .unwrap_or_else(|| {
-                vec![
-                    Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../copal/copal-prep.sh"),
-                    PathBuf::from("/usr/local/bin/ytq"),
-                ]
-            });
+            .unwrap_or_else(|| vec![Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tests/reference/ytq.py")]);
         let Some((path, src)) = candidates.iter().find_map(|p| std::fs::read_to_string(p).ok().map(|s| (p, s))) else {
             eprintln!("skipped: no ytq source found");
             return;

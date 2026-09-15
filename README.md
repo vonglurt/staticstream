@@ -24,7 +24,7 @@ downloads as Static Stream by default, so the two belong together. ytq is a
 Python program in [copal](https://github.com/vonglurt/copal) today, and moves
 here piece by piece.
 
-## Status: phase 1 of 4
+## Status: phase 2 of 4
 
 The format is defined, built and measured by the Python prototype,
 `tools/copal-sstr.py` in [copal](https://github.com/vonglurt/copal). Two
@@ -36,13 +36,13 @@ reports there describe it:
 
 | Phase | Delivers | Done when |
 |---|---|---|
-| **0** | this repository: the workspace, the Makefile, the constants | `make check` passes on the guest and on the Mac |
+| 0 | this repository: the workspace, the Makefile, the constants | `make check` passes on the guest and on the Mac |
 | 1 | the format library and `sstr` at parity with the prototype | Python writes and Rust reads, and the reverse, byte for byte, through the prototype's whole damage battery |
-| 2 | ytq in Rust, sharing the Python ytq's `queue.json` and locks, archiving to `.sstr` by default through `~/.config/copal/media.conf` | a queued video leaves a `.sstr` that verifies and plays back identical to the MP4 it replaced; Rust and Python ytq run side by side on one queue; only then does the binary `ytq` exist |
+| **2** | ytq in Rust, sharing the Python ytq's `queue.json` and locks, archiving to `.sstr` by default through `~/.config/copal/media.conf` | a queued video leaves a `.sstr` that verifies and plays back identical to the MP4 it replaced; Rust and Python ytq run side by side on one queue; only then does the binary `ytq` exist |
 | 3 | `sstr-workspace`: Browser, Inspector, Transcript, Services, Queue | every Service is a command line shown in the Transcript before it runs |
 | 4 | `make dist` for every target, and version 1's stronger outer code | binaries run on a Pi 2B and an x86_64 VM |
 
-Phases 0 and 1 are done on the guest. `sstr` does everything the prototype
+Phases 0, 1 and 2 are done on the guest. `sstr` does everything the prototype
 does, with the same options and the same reports:
 - **Capture and playback:** `record` and `play` (stdout, `-o`, `--paced`,
   `--speed`, `--start`, `--follow`, `--serve`).
@@ -67,12 +67,13 @@ Measured on the guest:
 - Recording 20 MB takes 0.55 s against the prototype's 2.98 s.
 - Repairing 20 MB with one bit in 10,000 flipped takes 1.7 s against 24.6 s.
 
-No `ytq` binary is built yet. `~/.local/bin` comes before `/usr/local/bin`
-on Copal's PATH, so an unfinished Rust `ytq` would hide the working Python
-one. It is added when phase 2's test passes.
+`ytq` is a binary here since step 2e, and the Python ytq is retired.
+`~/.local/bin` comes before `/usr/local/bin` on Copal's PATH, which is why no
+`ytq` was built until phase 2's test passed: an unfinished one would have
+hidden the working Python ytq on every node.
 
-Phase 2, ytq in Rust, has begun; `docs/phase-2.md` is the plan. Step 2a is
-done:
+Phase 2, ytq in Rust, is done; `docs/phase-2.md` is the plan and the record.
+Step 2a is done:
 - **What is in it:** the Rust ytq is `sstr ytq`, with `add`, `clip`,
   `list`, `status`, `clear`, `cookies` and the help.
 - **What it shares:** the Python ytq's `queue.json`, its locks and its log.
@@ -158,16 +159,40 @@ tmux server and agrees with the Python window on 133 comparisons:
 - **Focus:** a copy made while another window has focus is not queued; one
   made while this window has focus is.
 
+Step 2e is done, and with it phase 2: `ytq` is the binary people type, and
+the Python ytq is retired.
+- **The binary:** `staticstream-ytq` builds `ytq` as well as the library,
+  from the same `cli::main` that `sstr ytq` runs, so the two cannot drift.
+  `make install` and `copal-build` put it in `~/.local/bin`, first on Copal's
+  PATH. Super+Shift+Y needed no change at all: both keybindings already
+  resolve `ytq` with `command -v`.
+- **A runner it starts is itself:** run as `ytq` the subcommand is not
+  repeated, so a background runner is `ytq run --quiet`, and
+  `~/.config/ytq/auto` starts one as it always did.
+- **Retired:** `copal-prep.sh` no longer writes a Python ytq -- 1,466 lines
+  gone. `install_ytq` keeps what is still its business: `/etc/yt-dlp.conf`,
+  `yt-brave`, and the wl-clipboard, xclip, xdotool and libnotify that ytq
+  calls out to. It removes an old `/usr/local/bin/ytq` only when the header
+  shows Copal wrote it.
+- **The specification is kept:** the Python ytq is frozen at
+  `tests/reference/ytq.py`, byte for byte the file a clean install wrote, so
+  the comparisons outlive the program they compare against.
+
+`make check` passes with `ytq` in the Python one's place: 76 unit tests, then
+44 + 32 + 50 comparisons, 34 checks and 133 comparisons -- **293 in all**.
+Run by hand, `make ytq-crosscheck` and the rest take their default and
+exercise `sstr ytq` instead, so both spellings stay covered.
+
 ## Build
 
 ```sh
 make            # the list
 make check      # no external crates, the tests, an offline release build, the crosscheck
 make crosscheck # sstr against tools/copal-sstr.py in ../copal, comparison by comparison
-make ytq-crosscheck  # sstr ytq against the Python ytq in ../copal/copal-prep.sh
+make ytq-crosscheck  # the Rust ytq against the Python ytq of tests/reference
 make run ARGS='play cap.sstr --paced'
 make workspace
-make install    # sstr and sstr-workspace into ~/.local/bin
+make install    # sstr, sstr-workspace and ytq into ~/.local/bin
 make tools      # cargo-make and cargo-zigbuild, for:
 make dist       # release binaries for aarch64, armv7 and x86_64 musl
 ```

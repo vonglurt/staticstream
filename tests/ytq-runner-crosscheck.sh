@@ -21,10 +21,13 @@
 
 set -u
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-COPAL=${STATICSTREAM_COPAL:-$ROOT/../copal}
+SPEC=${SPEC:-$ROOT/tests/reference/ytq.py}
 SSTR=${SSTR:-$ROOT/target/release/sstr}
+# The ytq under test: the binary, or `sstr ytq`. Left unquoted where it is
+# called, so that the two words of the default split into two.
+YTQ=${YTQ:-$SSTR ytq}
 
-[ -f "$COPAL/copal-prep.sh" ] || { printf '  --      ytq-runner-crosscheck skipped: no copal checkout at %s\n' "$COPAL"; exit 0; }
+[ -f "$SPEC" ] || { printf '  --      ytq-runner-crosscheck skipped: no specification at %s\n' "$SPEC"; exit 0; }
 command -v python3 >/dev/null 2>&1 || { printf '  --      ytq-runner-crosscheck skipped: no python3\n'; exit 0; }
 [ -x "$SSTR" ] || { printf 'ytq-runner-crosscheck: no %s -- make build\n' "$SSTR"; exit 2; }
 
@@ -39,7 +42,7 @@ same() {
     if cmp -s "$2" "$3"; then ok "$1"; else bad "$1:"; diff -u "$2" "$3" | head -30 | sed 's/^/          /'; fi
 }
 
-awk '/cat > \/usr\/local\/bin\/ytq <<.YTQ./{f=1;next} /^YTQ$/{f=0} f' "$COPAL/copal-prep.sh" > "$W/ytq.py"
+cp "$SPEC" "$W/ytq.py"
 
 STUB="$W/stub"
 mkdir -p "$STUB"
@@ -65,7 +68,7 @@ EOF
 chmod +x "$STUB"/*
 
 py() { h=$1; shift; env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$h" PATH="$STUB:$PATH" PYTHONIOENCODING=utf-8 python3 "$W/ytq.py" "$@"; }
-rs() { h=$1; shift; env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$h" PATH="$STUB:$PATH" "$SSTR" ytq "$@"; }
+rs() { h=$1; shift; env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$h" PATH="$STUB:$PATH" $YTQ "$@"; }
 # OUTPUT=mp4: what the Python ytq does, which is what this compares -- and is
 # step 2c's "OUTPUT=mp4 leaves today's files". The Python ytq ignores the key.
 home() { d="$W/$1"; rm -rf "$d"; mkdir -p "$d/.config/ytq" "$d/out"; printf 'DIR=%s/out\nOUTPUT=mp4\n' "$d" > "$d/.config/ytq/config"; echo "$d"; }
@@ -79,7 +82,7 @@ start_runner() {
             python3 "$W/ytq.py" run --quiet > "$2/run.out" 2>&1 &
     else
         env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$2" PATH="$STUB:$PATH" STANDIN_GATES="$3" \
-            "$SSTR" ytq run --quiet > "$2/run.out" 2>&1 &
+            $YTQ run --quiet > "$2/run.out" 2>&1 &
     fi
     RUNNER=$!
 }
@@ -114,7 +117,7 @@ compare() { # <scenario> <label>
 }
 norm_status() { sed -E -e "s|$2|HOME|g" -e 's/\(for [0-9:]+\)/(for T)/' -e 's/started [0-9:]+ ago/started T ago/' -e 's/runner pid [0-9]+/runner pid P/' -e 's/^runner: pid [0-9]+/runner: pid P/' "$1"; }
 
-echo "  --      ytq-runner-crosscheck: $SSTR ytq run against the ytq in $COPAL/copal-prep.sh"
+echo "  --      ytq-runner-crosscheck: $YTQ run against $SPEC"
 
 # A: a download, looked at mid-part and mid-merge.
 for side in py rs; do
