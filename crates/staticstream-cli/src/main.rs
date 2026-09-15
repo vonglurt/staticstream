@@ -182,11 +182,16 @@ fn pump(input: Box<dyn Read + Send>, chunk: usize, align: usize, flush_ms: u64, 
                     first = Instant::now();
                 }
                 buf.extend_from_slice(&bytes);
-                while buf.len() >= chunk {
-                    on_chunk(&buf[..chunk], first)?;
-                    buf.drain(..chunk);
+                // Whole chunks by index, and the buffer trimmed once: draining
+                // each chunk from the front shifts everything behind it, and at
+                // armor's 45 bytes a chunk that is 1,400 shifts of a 64 KiB read.
+                let mut start = 0;
+                while buf.len() - start >= chunk {
+                    on_chunk(&buf[start..start + chunk], first)?;
+                    start += chunk;
                     first = Instant::now();
                 }
+                buf.drain(..start);
             }
             Err(RecvTimeoutError::Timeout) => {}
             Err(RecvTimeoutError::Disconnected) => break,
@@ -373,16 +378,18 @@ fn cmd_armor(raw: &[String]) -> Result<i32, String> {
     let input = open_in(a.pos.first().map(String::as_str).unwrap_or("-")).map_err(|e| e.to_string())?;
     let rate = a.num::<f64>("--baud", 0.0)? / 10.0;
     let stdout = io::stdout();
-    let mut out = stdout.lock();
+    // Paced, every line leaves when its time comes; unpaced, lines are
+    // gathered into large writes instead of one system call each.
+    let mut out: Box<dyn Write> = if rate > 0.0 { Box::new(stdout.lock()) } else { Box::new(io::BufWriter::with_capacity(1 << 16, stdout.lock())) };
     let t0 = Instant::now();
     let mut sent = 0u64;
     let mut off = 0u64;
     let mut h = Sha256::new();
     let send = |out: &mut dyn Write, text: &str, sent: &mut u64| -> io::Result<()> {
         out.write_all(text.as_bytes())?;
-        out.flush()?;
         *sent += text.len() as u64;
         if rate > 0.0 {
+            out.flush()?;
             let due = t0 + Duration::from_secs_f64(*sent as f64 / rate);
             let now = Instant::now();
             if due > now {
@@ -402,6 +409,7 @@ fn cmd_armor(raw: &[String]) -> Result<i32, String> {
     })
     .map_err(|e| e.to_string())?;
     send(&mut out, &tty::end_line(off, &hex(&h.finish())), &mut sent).map_err(|e| e.to_string())?;
+    out.flush().map_err(|e| e.to_string())?;
     Ok(0)
 }
 
