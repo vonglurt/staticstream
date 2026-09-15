@@ -1,0 +1,11 @@
+# Rust
+/target/
+**/*.rs.bk
+
+# make dist
+/dist/
+
+# macOS metadata. A tree reached through the UTM share gets a ._NAME beside
+# every NAME the Mac copies onto it; they are the host's, not the project's.
+._*
+.DS_Store

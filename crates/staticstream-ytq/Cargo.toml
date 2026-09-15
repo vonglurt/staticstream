@@ -1,0 +1,16 @@
+[package]
+name = "staticstream-ytq"
+description = "ytq, the download queue that watches the clipboard, in Rust: its queue, settings and downloads, archiving to Static Stream"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+authors.workspace = true
+repository.workspace = true
+rust-version.workspace = true
+
+# A library until it matches the Python ytq Copal installs. The binary `ytq`
+# is added then, and not before: ~/.local/bin, where make install and
+# copal-build put what this workspace builds, comes before /usr/local/bin on
+# Copal's PATH, so an unfinished `ytq` there would shadow the working one.
+
+[dependencies]

@@ -1,0 +1,38 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/staticstream",
+    "crates/staticstream-tty",
+    "crates/staticstream-cli",
+    "crates/staticstream-ytq",
+    "crates/staticstream-workspace",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+license = "MIT"
+authors = ["Paul Richeson", "Claude"]
+repository = "https://github.com/vonglurt/staticstream"
+rust-version = "1.70"
+
+# NO EXTERNAL CRATES, AND THAT IS THE DESIGN -- orrery's and ascitty's rule.
+#
+# copal-build compiles the checkouts in ~/code on the machine itself, and a
+# fleet node is on a LAN that never reaches the internet, so a dependency is
+# a crate fetch that fails on the machines this is meant for. The crates here
+# depend only on each other. `make check` enforces it: Cargo.lock may name no
+# package with a `source`, and the release build runs --offline --locked.
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true
+
+# Phase 1 puts Reed-Solomon arithmetic in the tests, thousands of codewords;
+# an unoptimised build of that is the difference between a suite people run
+# and one they skip. Debug assertions stay on.
+[profile.test]
+opt-level = 2
