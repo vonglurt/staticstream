@@ -47,10 +47,15 @@ deps: ## prove Cargo.lock names no crate from outside this repository
 	    grep -B2 '^source = ' Cargo.lock | sed -n 's/^name = /  /p'; exit 1; fi
 	@printf '  ok      no external crates: %s packages, all in this workspace\n' "$$(grep -c '^name = ' Cargo.lock)"
 
-check: deps ## what a commit must pass: no external crates, the tests, an offline release build
+check: deps ## what a commit must pass: no external crates, the tests, an offline release build, the crosscheck
 	$(CARGO) test --workspace --offline --locked --quiet
 	$(CARGO) build --release --workspace --offline --locked
+	@sh tests/crosscheck.sh
 	@printf '  ok      check passed\n'
+
+crosscheck: ## the Rust sstr against tools/copal-sstr.py in ../copal: both directions, damage, armor
+	@$(CARGO) build --release --workspace --offline --locked --quiet
+	@VERBOSE=1 sh tests/crosscheck.sh
 
 # ytq is not installed from here until the Rust ytq does all the Python one
 # does: $(ROOT)/bin comes before /usr/local/bin on Copal's PATH, and would hide it.

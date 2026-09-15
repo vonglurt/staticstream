@@ -11,12 +11,16 @@ name = "staticstream-cli"
 version = "0.1.0"
 dependencies = [
  "staticstream",
+ "staticstream-tty",
  "staticstream-ytq",
 ]
 
 [[package]]
 name = "staticstream-tty"
 version = "0.1.0"
+dependencies = [
+ "staticstream",
+]
 
 [[package]]
 name = "staticstream-workspace"

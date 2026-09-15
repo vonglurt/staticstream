@@ -18,6 +18,15 @@
 //! body      = RS(255,223) codewords of the plain body, interleaved
 //! ```
 
+pub mod crc32;
+pub mod json;
+pub mod reader;
+pub mod record;
+pub mod rs;
+pub mod sha256;
+pub mod writer;
+pub mod zlib;
+
 /// The format version this crate reads and writes.
 pub const FORMAT_VERSION: u32 = 0;
 
