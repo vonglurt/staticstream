@@ -54,6 +54,7 @@ check: deps ## what a commit must pass: no external crates, the tests, an offlin
 	@sh tests/ytq-crosscheck.sh
 	@sh tests/ytq-runner-crosscheck.sh
 	@sh tests/ytq-archive-check.sh
+	@sh tests/ytq-window-crosscheck.sh
 	@printf '  ok      check passed\n'
 
 crosscheck: ## the Rust sstr against tools/copal-sstr.py in ../copal: both directions, damage, armor
@@ -72,6 +73,11 @@ ytq-runner-crosscheck: ## the Rust runner against the Python ytq's: downloads, s
 ytq-archive-check: ## the Rust ytq archiving downloads into Static Stream: OUTPUT, ARCHIVE_DIR, SSTR_KEY
 	@$(CARGO) build --release --workspace --offline --locked --quiet
 	@VERBOSE=1 sh tests/ytq-archive-check.sh
+
+# Needs tmux and Python's curses; without either it is skipped.
+ytq-window-crosscheck: ## the Rust window beside the Python ytq's curses window, in tmux: screens, keys, worker, watcher
+	@$(CARGO) build --release --workspace --offline --locked --quiet
+	@VERBOSE=1 sh tests/ytq-window-crosscheck.sh
 
 # ytq is not installed from here until the Rust ytq does all the Python one
 # does: $(ROOT)/bin comes before /usr/local/bin on Copal's PATH, and would hide it.

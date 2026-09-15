@@ -128,6 +128,36 @@ real downloads work in both `both` and `sstr` modes.
 `ytq-runner-crosscheck` still agrees with the Python ytq on 50 comparisons,
 with `OUTPUT=mp4`.
 
+Step 2d is done: `sstr ytq` with no command is the queue window, without
+curses.
+- **What it draws:** the Python window's header, the live panel for up to
+  two downloads, the list, the keys line and the message line, from the same
+  queue file.
+- **What it does:**
+  - **The watcher:** queues what is on the clipboard at start, then each
+    new copy while the window has focus. Focus is asked of Hyprland or X, as
+    the Python window asks.
+  - **The worker:** takes `run.lock` whenever nobody else has it.
+  - **The keys:** `a d r c o p w h x q` and the arrows do what the Python
+    window's keys do.
+- **The terminal:** `stty` for raw mode, escape sequences for the screen,
+  the `TIOCGWINSZ` ioctl for its size, and keys read on a thread.
+- **One difference:** SIGTERM, SIGHUP or Ctrl+C end the window as q does.
+  The Python window dies of them and leaves yt-dlp running.
+
+`make ytq-window-crosscheck` runs both windows side by side in a private
+tmux server and agrees with the Python window on 133 comparisons:
+- **Screens, cell by cell with their attributes:** two downloads and a
+  24-entry list, with the selection moved and scrolled, at three window
+  sizes.
+- **27 keys and key sequences**, each from the top of one queue: the screen
+  after it, and what it left in `queue.json`, the log and the browser.
+- **The window's own download:** the clipboard at start, a copy queued,
+  mid-part, paused and mid-merge, then q stopping the merge and putting the
+  entry back.
+- **Focus:** a copy made while another window has focus is not queued; one
+  made while this window has focus is.
+
 ## Build
 
 ```sh

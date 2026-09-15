@@ -232,6 +232,17 @@ fn interrupted() -> bool {
     SIGNALLED.load(Ordering::SeqCst)
 }
 
+/// Has SIGTERM, SIGHUP or SIGINT arrived since `catch_signals()`?
+pub fn signalled() -> bool {
+    interrupted()
+}
+
+/// Catch SIGTERM, SIGHUP and SIGINT, so a runner or the window ends as on
+/// Ctrl+C -- the download stopped and put back -- rather than just dying.
+pub fn catch_signals() {
+    sys::on_signals(&[sys::SIGTERM, sys::SIGHUP, sys::SIGINT], on_signal);
+}
+
 /// A download under way: what stop_current needs to stop it.
 #[derive(Default)]
 struct Current {
@@ -299,7 +310,7 @@ impl Runner {
 
     /// `log_start()`: a runner's first line -- which ytq and yt-dlp did what
     /// follows, with what settings.
-    fn log_start(&self, argv: &str) {
+    pub fn log_start(&self, argv: &str) {
         let ver = match run_timeout(Command::new("yt-dlp").arg("--version"), 20) {
             Ran::Done(_, out, _) => py_strip(&out).to_string(),
             Ran::TimedOut => "(cannot run: timed out)".into(),
@@ -403,7 +414,7 @@ impl Runner {
         .flatten()
     }
 
-    fn open_browser(&self, url: &str) -> bool {
+    pub fn open_browser(&self, url: &str) -> bool {
         for cmd in [vec!["brave", url], vec!["flatpak", "run", "com.brave.Browser", url], vec!["xdg-open", url]] {
             let spawned = Command::new(cmd[0]).args(&cmd[1..]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn();
             if spawned.is_ok() {
@@ -746,6 +757,17 @@ impl Runner {
         Ok(())
     }
 
+    /// The window's d on the entry being downloaded: yt-dlp goes at once. The
+    /// entry is already gone from the queue, so there is nothing to put back.
+    pub fn kill_if_current(&self, url: &str) {
+        let cur = self.current.lock().unwrap();
+        if cur.url == url {
+            if let Some(pid) = cur.pid {
+                let _ = sys::kill_group(pid, sys::SIGTERM);
+            }
+        }
+    }
+
     /// `stop_current(why)`: kill the download under way and put its entry back as it was.
     pub fn stop_current(&self, why: &str) {
         let cur = self.current.lock().unwrap();
@@ -767,7 +789,7 @@ impl Runner {
         self.update(&url, vec![("status", Value::str(status_back)), ("attempts", Value::Num(attempts)), ("progress", Value::str("")), ("live", Value::Obj(Vec::new()))]);
     }
 
-    fn mark_cookie_retries(&self) -> usize {
+    pub fn mark_cookie_retries(&self) -> usize {
         queue::edit(&self.paths, |items| {
             let mut n = 0;
             for i in items.iter_mut() {
@@ -876,7 +898,7 @@ impl Runner {
             }
             return 0;
         }
-        sys::on_signals(&[sys::SIGTERM, sys::SIGHUP, sys::SIGINT], on_signal);
+        catch_signals();
         let interactive = !quiet && io::stdin().is_terminal() && io::stdout().is_terminal();
         if self.serve(false, interactive).is_err() {
             self.stop.store(true, Ordering::SeqCst);

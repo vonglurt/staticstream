@@ -156,7 +156,7 @@ impl Ctx {
     }
 }
 
-fn read_clipboard() -> String {
+pub(crate) fn read_clipboard() -> String {
     for cmd in [vec!["wl-paste", "-n", "--type", "text/plain"], vec!["xclip", "-o", "-selection", "clipboard"]] {
         if let Ran::Done(0, out, _) = run_timeout(Command::new(cmd[0]).args(&cmd[1..]), 3) {
             return py_strip(&out).to_string();
@@ -464,8 +464,8 @@ pub fn main(argv: &[String]) -> i32 {
             i32::from(failed)
         }
         "tui" => {
-            eprintln!("sstr ytq: the window is not in the Rust ytq yet -- docs/phase-2.md, step 2d. Until then the Python ytq has it: ytq");
-            2
+            let runner = Arc::new(Runner::new(ctx.paths.clone(), ctx.home.clone(), ctx.s.clone(), Mode::Quiet));
+            crate::window::main(runner)
         }
         other => help(&ctx, other),
     }

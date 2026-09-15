@@ -195,3 +195,55 @@ mod tests {
         let _ = std::fs::remove_file(path);
     }
 }
+
+#[repr(C)]
+#[allow(dead_code)]
+struct Winsize {
+    ws_row: u16,
+    ws_col: u16,
+    ws_xpixel: u16,
+    ws_ypixel: u16,
+}
+
+// The one ioctl number that differs between the systems this is built for.
+#[cfg(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly",
+    target_arch = "powerpc",
+    target_arch = "powerpc64",
+    target_arch = "mips",
+    target_arch = "mips64",
+    target_arch = "sparc64"
+))]
+const TIOCGWINSZ: std::os::raw::c_ulong = 0x4008_7468;
+#[cfg(not(any(
+    target_os = "macos",
+    target_os = "ios",
+    target_os = "freebsd",
+    target_os = "netbsd",
+    target_os = "openbsd",
+    target_os = "dragonfly",
+    target_arch = "powerpc",
+    target_arch = "powerpc64",
+    target_arch = "mips",
+    target_arch = "mips64",
+    target_arch = "sparc64"
+)))]
+const TIOCGWINSZ: std::os::raw::c_ulong = 0x5413;
+
+extern "C" {
+    fn ioctl(fd: c_int, request: std::os::raw::c_ulong, ...) -> c_int;
+}
+
+/// The size of the terminal on `fd`, as (rows, columns): the `TIOCGWINSZ`
+/// ioctl, which is what curses asks too, and no process a frame.
+pub fn window_size(fd: c_int) -> Option<(usize, usize)> {
+    let mut ws = Winsize { ws_row: 0, ws_col: 0, ws_xpixel: 0, ws_ypixel: 0 };
+    // SAFETY: ws is a struct winsize, which TIOCGWINSZ fills in and nothing more.
+    let r = unsafe { ioctl(fd, TIOCGWINSZ, &mut ws as *mut Winsize) };
+    (r == 0 && ws.ws_row > 0 && ws.ws_col > 0).then(|| (ws.ws_row as usize, ws.ws_col as usize))
+}

@@ -25,8 +25,10 @@ pub mod queue;
 pub mod runner;
 pub mod settings;
 pub mod sys;
+pub mod term;
 pub mod textwrap;
 pub mod urls;
+pub mod window;
 
 /// What a runner may take next, in the order it looks for them.
 pub const DOWNLOADABLE: [&str; 3] = ["retry-cookies", "queued", "retry"];
