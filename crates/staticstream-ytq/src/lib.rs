@@ -22,9 +22,14 @@ pub mod cli;
 pub mod live;
 pub mod log;
 pub mod queue;
+pub mod runner;
 pub mod settings;
 pub mod sys;
+pub mod textwrap;
 pub mod urls;
+
+/// What a runner may take next, in the order it looks for them.
+pub const DOWNLOADABLE: [&str; 3] = ["retry-cookies", "queued", "retry"];
 
 /// Every state an entry can be in, in the order ytq's window lists them.
 pub const ORDER: [&str; 9] = [

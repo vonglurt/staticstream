@@ -1,0 +1,143 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Paul Richeson
+#
+# A stand-in yt-dlp, after the one in the ytq lab report: it answers what ytq
+# asks of yt-dlp with real yt-dlp lines, and nothing reaches the network.
+#
+#   --version                  2026.08.19
+#   --simulate --print ...     "Fake Title — café<TAB>1080<TAB>mp4"; a video id
+#                              containing UNAVAIL is unavailable
+#   --skip-download ...        writes captions (the id ending U: the uploader's
+#                              only; otherwise automatic, two files) and prints
+#                              STEM and META; an id containing NOCAPS gets a 429
+#   a download                 two parts with progress, a merge, metadata, the
+#                              part files deleted, FILE; an id containing BOT
+#                              wants cookies (given by yt-brave), FLAKY fails
+#
+# $STANDIN_GATES, a directory: at each gate the stand-in writes at.N there and
+# waits for go.N, so a test can look at both ytqs at the same moment of a
+# download -- gate 1 mid-part, gate 2 mid-merge.
+
+import json
+import os
+import re
+import sys
+import time
+
+args = sys.argv[1:]
+
+
+def after(flag):
+    return args[args.index(flag) + 1] if flag in args else ""
+
+
+def out(s):
+    print(s, flush=True)
+
+
+def err(s):
+    print(s, file=sys.stderr, flush=True)
+
+
+def gate(n):
+    d = os.environ.get("STANDIN_GATES")
+    if not d:
+        return
+    open(os.path.join(d, "at.%d" % n), "w").close()
+    t = time.time()
+    while not os.path.exists(os.path.join(d, "go.%d" % n)) and time.time() - t < 60:
+        time.sleep(0.05)
+
+
+if "--version" in args:
+    out("2026.08.19")
+    sys.exit(0)
+
+url = args[-1]
+m = re.search(r"v=([A-Za-z0-9_-]{11})", url)
+vid = m.group(1) if m else "UNKNOWNID00"
+title = "Fake Title — café"
+tmpl = after("-o")
+
+
+def name(ext):
+    return (tmpl.replace("%(safe_author&{}-|)s", "Fake-").replace("%(safe_title&{}_|)s", "Fake_Title_")
+            .replace("%(safe_id)s", vid).replace("%(ext)s", ext).replace("%%", "%"))
+
+
+if "--simulate" in args and "--skip-download" not in args:
+    if "UNAVAIL" in vid:
+        err("ERROR: [youtube] %s: Video unavailable. This video has been removed by the uploader" % vid)
+        sys.exit(1)
+    out("%s\t1080\tmp4" % title)
+    sys.exit(0)
+
+if "--skip-download" in args:
+    stem = name("mp4")[:-len(".mp4")]
+    uploader = vid.endswith("U")
+    if "NOCAPS" in vid:
+        err("WARNING: [youtube] %s: Some formats may be missing" % vid)
+        err("ERROR: Unable to download video subtitles for 'en': HTTP Error 429: Too Many Requests")
+    else:
+        cue = ("All right, so here we are, in front of the &amp; well-known elephants\n\n"
+               "00:00:02.000 --> 00:00:04.000\n<c>the cool thing</c> about these guys -- is that they have really... really really long trunks\n\n"
+               "00:00:04.000 --> 00:00:04.010\nthe cool thing about these guys -- is that they have really... really really long trunks\n\n"
+               "00:00:04.010 --> 00:00:09.000\nand that's, that's cool. A so--called e-mail from x-ray-vision "
+               + "supercalifragilisticexpialidocious-" * 4 + "end\n")
+        vtt = "WEBVTT\nKind: captions\nLanguage: en\n\n00:00:00.000 --> 00:00:02.000\n" + cue
+        open(stem + ".en.vtt", "w").write(vtt)
+        if not uploader:
+            open(stem + ".en-orig.vtt", "w").write(vtt)
+    prints = [args[i + 1] for i, a in enumerate(args) if a == "--print"]
+    for p in prints:
+        if p.startswith("video:STEM"):
+            out("STEM " + name("webm"))
+        elif p.startswith("video:META"):
+            out("META " + json.dumps({"title": title, "uploader": "Fake Uploader", "channel": "Fake",
+                                      "webpage_url": "https://www.youtube.com/watch?v=" + vid, "timestamp": 1114313512,
+                                      "upload_date": "20050424", "license": None,
+                                      "description": "A line of description.\nAnd a second.",
+                                      "subtitles": {"en": [{"ext": "vtt"}]} if uploader else {}}))
+    sys.exit(0)
+
+# A download.
+out("[youtube] Extracting URL: %s" % url)
+out("[youtube] %s: Downloading webpage" % vid)
+err("WARNING: [youtube] No supported JavaScript runtime could be found.")
+cookies = any(a.startswith("--cookies-from-browser") for a in args)
+if "BOT" in vid and not cookies:
+    err("ERROR: [youtube] %s: Sign in to confirm you're not a bot. Use --cookies-from-browser or --cookies for the authentication." % vid)
+    sys.exit(1)
+if "FLAKY" in vid:
+    err("ERROR: [download] Got error: HTTP Error 500: Internal Server Error")
+    sys.exit(1)
+out("[MetadataParser] Parsed safe_author from '%(uploader,channel|)#S': 'Fake'")
+out("[info] %s: Downloading 1 format(s): 299+140" % vid)
+final = name("mp4")
+root = final[:-len(".mp4")]
+parts = [("299", "avc1.64002a", "none", "1080", ".f299.mp4", 7969177), ("140", "none", "mp4a.40.2", "NA", ".f140.m4a", 1992294)]
+for i, (fid, v, a, h, ext, size) in enumerate(parts):
+    out("[download] Destination: %s" % (root + ext))
+    for pct in (25.0, 50.0, 62.5, 100.0):
+        done = pct == 100.0
+        if i == 0 and pct == 62.5 and os.environ.get("STANDIN_GATES"):
+            # ytq writes the live record at most once a second: give it a
+            # second, so the record at gate 1 has this line's figures in it.
+            time.sleep(1.1)
+        out("PROGRESS %5.1f%%|%s|%d|NA|2.00MiB/s|%s|00:00:0%d|NA|NA|%s|%s|%s|%s|%s" % (
+            pct, "NA" if done else int(size * pct / 100), size, "00:00" if done else "00:03", i + 1, fid, v, a, h,
+            "finished" if done else "downloading"))
+        if i == 0 and pct == 62.5:
+            gate(1)
+    open(root + ext, "wb").write(b"\0" * 1000)
+out('[Merger] Merging formats into "%s"' % final)
+open(root + ".temp.mp4", "wb").write(b"\0" * 6000000)
+gate(2)
+os.replace(root + ".temp.mp4", final)
+if "--embed-metadata" in args:
+    out('[Metadata] Adding metadata to "%s"' % final)
+for fid, v, a, h, ext, size in reversed(parts):
+    out("Deleting original file %s (pass -k to keep)" % (root + ext))
+    os.remove(root + ext)
+out("FILE " + final)

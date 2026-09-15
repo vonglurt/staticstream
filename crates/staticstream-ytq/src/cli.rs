@@ -6,17 +6,17 @@
 //! help -- plus two probes the crosscheck uses to hold this to the Python ytq.
 
 use std::collections::BTreeMap;
-use std::io::Read;
 use std::path::PathBuf;
-use std::process::{Command, Stdio};
-use std::time::{Duration, Instant};
+use std::process::Command;
+use std::sync::Arc;
 
 use staticstream::json::{self, Value};
 
 use crate::live::{live_view, now};
 use crate::log::{log, say, Mode};
 use crate::queue::{self, status, text, title_or_url, RunLock};
-use crate::urls::{as_url, py_strip, short, youtube_urls};
+use crate::runner::{brave_ready, run_timeout, Ran, Runner, NAME};
+use crate::urls::{as_url, first_id, py_strip, short, youtube_urls};
 use crate::{settings, Paths, HISTORY, ORDER, PENDING};
 
 /// The Python ytq's own header, which its help prints.
@@ -156,41 +156,9 @@ impl Ctx {
     }
 }
 
-/// Run a command with a time limit, as `subprocess.run(..., timeout=secs)`.
-fn run_timeout(cmd: &mut Command, secs: u64) -> Option<(i32, String, String)> {
-    let mut child = cmd.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped()).spawn().ok()?;
-    let mut out = child.stdout.take()?;
-    let mut err = child.stderr.take()?;
-    let t_out = std::thread::spawn(move || {
-        let mut b = Vec::new();
-        let _ = out.read_to_end(&mut b);
-        b
-    });
-    let t_err = std::thread::spawn(move || {
-        let mut b = Vec::new();
-        let _ = err.read_to_end(&mut b);
-        b
-    });
-    let deadline = Instant::now() + Duration::from_secs(secs);
-    let code = loop {
-        match child.try_wait() {
-            Ok(Some(st)) => break st.code().unwrap_or(-1),
-            Ok(None) if Instant::now() < deadline => std::thread::sleep(Duration::from_millis(20)),
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return None;
-            }
-        }
-    };
-    let o = String::from_utf8_lossy(&t_out.join().unwrap_or_default()).into_owned();
-    let e = String::from_utf8_lossy(&t_err.join().unwrap_or_default()).into_owned();
-    Some((code, o, e))
-}
-
 fn read_clipboard() -> String {
     for cmd in [vec!["wl-paste", "-n", "--type", "text/plain"], vec!["xclip", "-o", "-selection", "clipboard"]] {
-        if let Some((0, out, _)) = run_timeout(Command::new(cmd[0]).args(&cmd[1..]), 3) {
+        if let Ran::Done(0, out, _) = run_timeout(Command::new(cmd[0]).args(&cmd[1..]), 3) {
             return py_strip(&out).to_string();
         }
     }
@@ -225,20 +193,6 @@ fn report(ctx: &Ctx, urls: &[String], added: &[String], runner: Option<(String, 
     }
     if !lines.is_empty() {
         ctx.say(&lines.join("\n"), false);
-    }
-}
-
-fn brave_ready(ctx: &Ctx) -> Option<String> {
-    let mut cmd = Command::new("yt-brave");
-    cmd.args(["--profile", ctx.setting("PROFILE")]);
-    if !ctx.setting("KEYRING").is_empty() {
-        cmd.args(["--keyring", ctx.setting("KEYRING")]);
-    }
-    cmd.arg("--path");
-    match run_timeout(&mut cmd, 10) {
-        Some((0, _, _)) => None,
-        Some((_, _, err)) => Some(err.trim().lines().next().unwrap_or("yt-brave found no Brave profile").to_string()),
-        None => Some("cannot run yt-brave: it did not start or did not finish".into()),
     }
 }
 
@@ -287,7 +241,7 @@ fn cmd_cookies(ctx: &Ctx, run: bool) -> i32 {
         println!("nothing is waiting on a Brave sign-in");
         return 0;
     }
-    if let Some(why) = brave_ready(ctx) {
+    if let Some(why) = brave_ready(&ctx.s) {
         ctx.say(&format!("{why} -- start Brave once, or set PROFILE in ~/.config/ytq/config"), true);
         return 1;
     }
@@ -372,6 +326,30 @@ fn probe(ctx: &Ctx, args: &[String]) -> i32 {
             println!("{}", obj.to_python_json(None));
             0
         }
+        Some("vtt") => {
+            let Some(path) = args.get(1) else { return 2 };
+            match crate::textwrap::vtt_text(std::path::Path::new(path)) {
+                Ok(t) => {
+                    println!("{}", Value::str(t).to_python_json(None));
+                    0
+                }
+                Err(e) => {
+                    eprintln!("probe vtt: {e}");
+                    1
+                }
+            }
+        }
+        Some("fill") => {
+            let Some(path) = args.get(1) else { return 2 };
+            let Ok(Value::Arr(texts)) = std::fs::read(path).map_err(|e| e.to_string()).and_then(|b| json::parse_bytes(&b).map_err(|e| e.0)) else {
+                eprintln!("probe fill: FILE must be a JSON list of strings");
+                return 2;
+            };
+            for t in texts {
+                println!("{}", Value::str(crate::textwrap::fill(t.as_str().unwrap_or(""), 78)).to_python_json(None));
+            }
+            0
+        }
         _ => 2,
     }
 }
@@ -451,11 +429,35 @@ pub fn main(argv: &[String]) -> i32 {
             ctx.mode = Mode::Quiet;
             probe(&ctx, &args[1..])
         }
-        "run" | "transcript" | "tui" => {
-            eprintln!(
-                "sstr ytq {cmd}: not in the Rust ytq yet -- docs/phase-2.md, step {}. Until then the Python ytq does it: ytq {cmd}",
-                if cmd == "tui" { "2d" } else { "2b" }
-            );
+        "run" => {
+            let runner = Arc::new(Runner::new(ctx.paths.clone(), ctx.home.clone(), ctx.s.clone(), ctx.mode));
+            runner.cmd_run(flags.contains(&"--quiet"), &argv.join(" "))
+        }
+        "transcript" if args.len() > 1 => {
+            let runner = Runner::new(ctx.paths.clone(), ctx.home.clone(), ctx.s.clone(), ctx.mode);
+            let dir = ctx.setting("DIR").to_string();
+            let mut failed = false;
+            for u in &args[1..] {
+                let u = as_url(u).unwrap_or_else(|| u.clone());
+                if first_id(&u).is_none() {
+                    println!("not a YouTube video: {u}");
+                    failed = true;
+                    continue;
+                }
+                let _ = std::fs::create_dir_all(&dir);
+                let tmpl = format!("{}/{}", dir.replace('%', "%%").trim_end_matches('/'), NAME);
+                match runner.transcript(&u, &tmpl, &["yt-dlp".to_string()], None) {
+                    Ok(txt) => println!("{}", ctx.tilde(&txt)),
+                    Err(why) => {
+                        println!("no transcript for {u} -- {why}");
+                        failed = true;
+                    }
+                }
+            }
+            i32::from(failed)
+        }
+        "tui" => {
+            eprintln!("sstr ytq: the window is not in the Rust ytq yet -- docs/phase-2.md, step 2d. Until then the Python ytq has it: ytq");
             2
         }
         other => help(&ctx, other),

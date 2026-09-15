@@ -37,7 +37,48 @@ extern "C" {
     fn tzset();
     fn flock(fd: c_int, operation: c_int) -> c_int;
     fn kill(pid: c_int, sig: c_int) -> c_int;
+    fn pipe(fds: *mut c_int) -> c_int;
+    fn fcntl(fd: c_int, cmd: c_int, ...) -> c_int;
+    fn signal(signum: c_int, handler: extern "C" fn(c_int)) -> usize;
 }
+
+const F_SETFD: c_int = 2;
+const FD_CLOEXEC: c_int = 1;
+
+/// A pipe whose two ends are not inherited by other children: the read end
+/// for this process, the write end to give one child as both stdout and
+/// stderr -- Python's `stdout=PIPE, stderr=STDOUT`, lines in the order they
+/// were written. Without close-on-exec a yt-dlp started at the same moment by
+/// another thread would hold the write end open, and the reader would never
+/// see the end of the stream.
+pub fn pipe_pair() -> io::Result<(File, File)> {
+    use std::os::fd::FromRawFd;
+    let mut fds = [0 as c_int; 2];
+    // SAFETY: fds is a two-int array, as pipe(2) requires; both descriptors
+    // are new and owned by the Files made from them.
+    unsafe {
+        if pipe(fds.as_mut_ptr()) != 0 {
+            return Err(io::Error::last_os_error());
+        }
+        for fd in fds {
+            fcntl(fd, F_SETFD, FD_CLOEXEC);
+        }
+        Ok((File::from_raw_fd(fds[0]), File::from_raw_fd(fds[1])))
+    }
+}
+
+/// Run `handler` on each of `signals`. The handler may only set a flag.
+pub fn on_signals(signals: &[i32], handler: extern "C" fn(c_int)) {
+    for &s in signals {
+        // SAFETY: installing a handler that does nothing but store to an atomic.
+        unsafe {
+            signal(s, handler);
+        }
+    }
+}
+
+pub const SIGHUP: i32 = 1;
+pub const SIGINT: i32 = 2;
 
 pub const LOCK_SH: i32 = 1;
 pub const LOCK_EX: i32 = 2;

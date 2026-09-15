@@ -275,7 +275,7 @@ impl PyRound for f64 {
 }
 
 /// `os.path.splitext`.
-fn splitext(path: &str) -> (&str, &str) {
+pub fn splitext(path: &str) -> (&str, &str) {
     let base_start = path.rfind('/').map_or(0, |i| i + 1);
     let base = &path[base_start..];
     let lead = base.len() - base.trim_start_matches('.').len();

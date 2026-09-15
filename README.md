@@ -87,6 +87,28 @@ done:
   - **Concurrency:** thirty simultaneous adds from both.
   - **Clipboard:** the cases, messages and exit codes.
 
+Step 2b is done: the Rust ytq runs its own downloads. `sstr ytq run` does
+the whole job:
+- **Checking and downloading:** checks, downloads with the live record,
+  stops on SIGTERM, retries.
+- **The cookie flow:** Brave is opened, and the retry goes through
+  `yt-brave`.
+- **Transcripts:** with their Notes, and `sstr ytq transcript` on its own.
+
+A runner that `add` or `clip` starts is now the Rust one.
+
+`make ytq-runner-crosscheck` agrees with the Python ytq on 50 comparisons.
+- **A stand-in yt-dlp that pauses at gates:**
+  - the queue, the log, the files, the notifications and the browser
+    opened;
+  - status mid-part and mid-merge;
+  - SIGTERM mid-merge;
+  - a rejected check, a bot check and a flaky download.
+- **Transcript text:** identical to Python's `textwrap` on 807 texts and
+  60 caption files.
+- **A real download of `jNQXAC9IVRw`:** the same file name, MP4 tags,
+  transcript Notes and queue entry.
+
 ## Build
 
 ```sh

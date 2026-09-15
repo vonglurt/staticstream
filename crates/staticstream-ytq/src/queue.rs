@@ -122,7 +122,7 @@ impl RunLock {
     /// Take run.lock, with a few tries, because `ytq status` looking at the
     /// lock holds it for a moment. Once taken, entries a dead runner left
     /// `downloading` go back in the queue.
-    pub fn take(&mut self, paths: &Paths, tries: u32) -> io::Result<bool> {
+    pub fn take(&mut self, paths: &Paths, tries: u32, on_taken: impl FnOnce()) -> io::Result<bool> {
         if let Some(dir) = paths.run_lock.parent() {
             std::fs::create_dir_all(dir)?;
         }
@@ -143,6 +143,7 @@ impl RunLock {
         file.set_len(0)?;
         (&file).write_all(format!("{}\n", std::process::id()).as_bytes())?;
         self.file = Some(file);
+        on_taken();
         edit(paths, |items| {
             for it in items.iter_mut() {
                 if status(it) == "downloading" {
@@ -180,13 +181,15 @@ impl RunLock {
     }
 }
 
-/// What starts a background runner. Until the Rust runner exists (step 2b of
-/// docs/phase-2.md) it is the Python ytq on PATH, which shares this queue;
+/// What starts a background runner: this program's own `ytq run --quiet`.
 /// $STATICSTREAM_YTQ_RUNNER overrides it, for tests.
 fn runner_command() -> Vec<String> {
     match std::env::var("STATICSTREAM_YTQ_RUNNER") {
         Ok(cmd) if !cmd.trim().is_empty() => cmd.split_whitespace().map(str::to_string).collect(),
-        _ => vec!["ytq".into(), "run".into(), "--quiet".into()],
+        _ => {
+            let me = std::env::current_exe().map(|p| p.to_string_lossy().into_owned()).unwrap_or_else(|_| "sstr".into());
+            vec![me, "ytq".into(), "run".into(), "--quiet".into()]
+        }
     }
 }
 
