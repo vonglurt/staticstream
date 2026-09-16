@@ -247,6 +247,30 @@ because a parity record can be the first thing a reader sees after a resync.
   the fixture: *did not rebuild two lost records of a group*. A binary
   replaced with something that is not one: *sstr did not run*. Both red, both
   naming the thing that was wrong.
+- **All three targets build now.** `rustup` and `cargo-zigbuild` went on the
+  guest, and `make dist` produces aarch64 (static-pie), armv7 EABI5 (32-bit,
+  static) and x86_64 (static) -- the Pi 2B's and the VM's among them. Alpine
+  ships no standard library for another target, which is why rustup was
+  needed at all and why `apk search rust-stdlib` finds only `rust`.
+- **The cross builds name their cargo by path, not by PATH.** Alpine's rust
+  and a rustup toolchain can both be installed, and only rustup's cargo can
+  see the targets rustup added. Copal's own `~/.profile` puts `~/.cargo/bin`
+  ahead of the system directories *once that directory exists* -- so the
+  moment rustup is installed, what `cargo` means changes at the next login. A
+  release script that quietly depended on that would build different things on
+  different days, so `dist.sh` resolves `rustup` and takes the `cargo` beside
+  it.
+- **`rustup-init` was run with `--no-modify-path`**, so rustup itself touched
+  nothing; the PATH change comes from Copal's profile and not from it. Both
+  toolchains were then put through the whole check -- Alpine's 1.96.1 and
+  rustup's 1.98.1 -- and both pass all 382.
+- **`verify.sh` tests the machine it is on and names the rest.** A dist built
+  with the cross tools carries three targets and a Pi 2B can run one of them;
+  trying all three would report two failures that are not failures, because a
+  binary for another machine is not a broken binary. `uname -m` and a triple
+  do not spell things alike -- a Pi 2B says `armv7l` where the triple says
+  `armv7`, and `arm64` and `aarch64` are one machine -- so the matching is
+  written down rather than assumed.
 - **What could not be checked here, stated plainly.** There is no rustup, no
   cargo-make and no cargo-zigbuild on this guest; `zig` is packaged and
   installed. Alpine does package `rustup` (1.29.0) — `make tools` said

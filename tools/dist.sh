@@ -105,7 +105,22 @@ fi
 # WHAT IS MISSING IS NAMED, WITH THE COMMAND THAT SUPPLIES IT. A backtrace
 # from inside cargo tells someone that a thing went wrong; this tells them
 # what to type.
-have_rustup=no; command -v rustup >/dev/null 2>&1 && have_rustup=yes
+# WHICH rustup, AND THEREFORE WHICH cargo. Alpine's rust and a rustup
+# toolchain can both be installed, and only rustup's cargo can see the targets
+# rustup added -- so the cross builds must use THAT one by path, not whichever
+# `cargo` PATH happens to resolve to today. Copal's own ~/.profile puts
+# ~/.cargo/bin ahead of the system directories once it exists, so PATH order
+# here changes the moment rustup is installed, which is not a thing a release
+# script should quietly depend on.
+RUSTUP=""
+if command -v rustup >/dev/null 2>&1; then
+    RUSTUP=$(command -v rustup)
+elif [ -x "$HOME/.cargo/bin/rustup" ]; then
+    RUSTUP="$HOME/.cargo/bin/rustup"
+fi
+CROSS_CARGO=""
+[ -n "$RUSTUP" ] && CROSS_CARGO="$(dirname "$RUSTUP")/cargo"
+have_rustup=no; [ -n "$RUSTUP" ] && have_rustup=yes
 have_zigbuild=no; command -v cargo-zigbuild >/dev/null 2>&1 && have_zigbuild=yes
 have_zig=no; command -v zig >/dev/null 2>&1 && have_zig=yes
 
@@ -116,8 +131,8 @@ for t in $CROSS; do
     fi
     why=""
     if [ "$have_rustup" = no ]; then
-        why="no rustup, so no standard library for it: apk add rustup && rustup-init, then rustup target add $t"
-    elif ! rustup target list --installed 2>/dev/null | grep -qx "$t"; then
+        why="no rustup, so no standard library for it: apk add rustup, rustup-init -y --no-modify-path, then rustup target add $t"
+    elif ! "$RUSTUP" target list --installed 2>/dev/null | grep -qx "$t"; then
         why="its standard library is not installed: rustup target add $t"
     elif [ "$have_zigbuild" = no ]; then
         if [ "$have_zig" = yes ]; then
@@ -132,8 +147,8 @@ for t in $CROSS; do
         printf '  --      %s: %s\n' "$t" "$why"
         continue
     fi
-    printf '  ..      %s (cargo zigbuild)\n' "$t"
-    if cargo zigbuild --release --locked --target "$t" >/dev/null 2>&1; then
+    printf '  ..      %s (cargo zigbuild, %s)\n' "$t" "$CROSS_CARGO"
+    if "$CROSS_CARGO" zigbuild --release --locked --target "$t" >/dev/null 2>&1; then
         mkdir -p "$DIST/$t"
         for b in $BINS; do cp "$TDIR/$t/release/$b" "$DIST/$t/$b"; done
         built="$built $t"

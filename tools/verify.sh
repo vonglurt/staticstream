@@ -29,19 +29,48 @@ PASSED=0
 ok() { PASSED=$((PASSED + 1)); printf '  ok      %s\n' "$1"; }
 bad() { FAILED=$((FAILED + 1)); printf '  FAIL    %s\n' "$1"; }
 
-# The one target directory in here, or the one named. A dist built on one
-# machine holds one; a dist built with the cross tools holds several, and the
-# machine being stood on picks its own by trying them.
+# THE DIST HOLDS EVERY TARGET; THIS MACHINE IS ONE OF THEM. A dist built with
+# the cross tools carries aarch64, armv7 and x86_64 side by side, and a Pi 2B
+# can run exactly one of those three. Trying them all would report two
+# failures that are not failures -- a binary for another machine is not a
+# broken binary -- so the arch is matched first and the rest are named and
+# left alone.
+#
+# uname -m and a target triple do not spell things the same way: a Pi 2B says
+# armv7l where the triple says armv7, and arm64 and aarch64 are one machine.
+me=$(uname -m)
+mine() { # <target triple> -> yes when this machine can run it
+    case "${1%%-*}" in
+        aarch64) case "$me" in aarch64|arm64) return 0 ;; esac ;;
+        armv7|armv6|arm) case "$me" in armv6l|armv7l|armv8l|arm) return 0 ;; esac ;;
+        x86_64) case "$me" in x86_64|amd64) return 0 ;; esac ;;
+        i686|i586) case "$me" in i?86) return 0 ;; esac ;;
+        *) case "$me" in "${1%%-*}") return 0 ;; esac ;;
+    esac
+    return 1
+}
+
 targets=""
+others=""
 for t in "$D"/*/; do
-    [ -f "$t/sstr" ] && targets="$targets $(basename "$t")"
+    [ -f "$t/sstr" ] || continue
+    n=$(basename "$t")
+    if mine "$n"; then targets="$targets $n"; else others="$others $n"; fi
 done
 [ -n "$targets" ] && [ -d "$A" ] || { printf 'verify.sh: no target directories with an sstr in %s\n' "$D"; exit 2; }
 
 W=$(mktemp -d "${TMPDIR:-/tmp}/sstr-verify.XXXXXX")
 trap 'rm -rf "$W"' EXIT INT TERM
 
-printf 'verify.sh on %s\n\n' "$(uname -m) $(uname -s)"
+printf 'verify.sh on %s\n\n' "$me $(uname -s)"
+for o in $others; do
+    printf '  --      %s: not this machine, nothing to say about it here\n' "$o"
+done
+[ -n "$others" ] && printf '\n'
+if [ -z "$targets" ]; then
+    printf 'None of the targets in %s is for a %s. Nothing was tested.\n' "$D" "$me"
+    exit 2
+fi
 
 for t in $targets; do
     B="$D/$t"
