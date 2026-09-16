@@ -90,7 +90,7 @@ because a parity record can be the first thing a reader sees after a resync.
 | **4a** | **version 1's outer code**: P+Q written and read, version 0 still written and read | a group with two records missing rebuilds both; the same capture at version 0 rebuilds neither; every phase-1 comparison still agrees. **Done**: `make outer-check`, 7 of 7 -- on one 200,000-byte capture with records 2 and 4 wiped, version 0 exits 1 with *2 data records lost* and version 1 exits 0 with *2 records rebuilt from parity* and a byte-identical payload. `make check` is 363 |
 | **4b** | **the damage battery at version 1**: the Static Stream report's thirteen kinds of damage, re-run against version 1, and the redundancy figure remeasured | the battery passes at version 1 and the overhead is the measured number, not the designed one. **Done**: `make outer-check`, 23 of 23. Version 1 recovers two payloads version 0 loses and loses none that version 0 keeps; the second row measures 1.0643 of version 0 against a designed 1.0588. `make check` is 379 |
 | **4c** | **`make dist`**: what this machine can build, and an exact account of what it cannot | `dist/` holds the native target's three binaries and a manifest; a missing target or linker is named, with the command that supplies it, rather than a backtrace from inside cargo. **Done here as far as this machine goes**: one target built, three accounted for, manifest written. **The report's own done-condition — *binaries run on the Pi 2B and the x86_64 VM* — is not met and cannot be met here**; it needs those two machines |
-| 4d | **the report, revised for phase 4** | V-E, V-F and the phase table say what was built and what was measured |
+| **4d** | **the report, revised for phase 4** | V-E, V-F and the phase table say what was built and what was measured. **Done**: copal's lab report gains Section IX (renumbering Procedures and Files touched), V-E's native-triple finding and the manifest, V-F's outer code as built, and V-G losing cargo-make; the phase table says what is done and that the two hardware runs are not |
 
 ## Deviations, written down as they are made
 
@@ -212,6 +212,22 @@ because a parity record can be the first thing a reader sees after a resync.
   targets were therefore not built, and no binary has been run on a Pi 2B or
   an x86_64 VM. The path this machine *did* exercise is the one that matters
   most for everyone else: the one where the tools are missing.
+
+### Step 4d
+
+- **The proposal stays as it was written; what changed is annotated.** That is
+  the report's own convention -- V-A's five crates were left standing with a
+  note pointing at what replaced them -- so the cargo-make bullet in the
+  summary keeps its wording and gains a parenthesis, and V-G carries the
+  argument.
+- **The abridged Makefile in V-G was showing code that no longer exists.** It
+  had the old `tools:` and `dist:` targets and a paragraph on
+  `Makefile.toml`'s `skip_core_tasks`. An excerpt that has drifted from the
+  file is worse than no excerpt: it reads as though it had been checked.
+- **What phase 4 has NOT done is in the report, not only in this file.** The
+  row's done-condition is *binaries run on the Pi 2B and the x86_64 VM*, and
+  Section IX-C says plainly that it is unmet, why, and what remains to settle
+  before those runs happen -- `+crt-static` for a binary meant to travel.
 
 ## Decisions already made
 
