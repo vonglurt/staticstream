@@ -277,6 +277,10 @@ Workspace -- with 118 unit tests beside it.
   This is an addition to ytq beyond the Python one, and a deliberate one: it
   takes nothing away, the existing crosschecks are untouched by it, and the
   alternative was a Service that was not a command line.
+  *(Later, and for the same reasons, `ytq -V | --version`: the Python has none,
+  `sstr` and `sstr-workspace` both do, and a program should be able to say
+  which program it is. It answers before the settings are read, so it works on
+  a machine with no HOME.)*
 - **THE FOURTH WAY IS THE ONE THAT COUNTS.** The check compares the queue the
   Workspace leaves with the queue `ytq retry` leaves in a shell and the queue
   `r` leaves in ytq's own window -- and all three go through the same

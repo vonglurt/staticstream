@@ -366,6 +366,20 @@ fn probe(ctx: &Ctx, args: &[String]) -> i32 {
 
 /// `sstr ytq ARGS`: the Python ytq's `main(argv)`, for the commands step 2a has.
 pub fn main(argv: &[String]) -> i32 {
+    // BEFORE THE SETTINGS, so it answers on a machine with no HOME. What
+    // version a program is has nothing to do with where its queue lives, and
+    // the one question a program should always be able to answer is which
+    // program it is. sstr and sstr-workspace answer it the same way; the
+    // Python ytq has no --version of its own, so this is an addition to ytq
+    // like `retry` and `forget` are, and takes nothing away.
+    if matches!(argv.first().map(String::as_str), Some("-V" | "--version")) {
+        println!(
+            "ytq {} (Static Stream format v{})",
+            env!("CARGO_PKG_VERSION"),
+            crate::format::FORMAT_VERSION
+        );
+        return 0;
+    }
     let Some((paths, home, s)) = settings::from_env() else {
         eprintln!("ytq: HOME is not set");
         return 2;
