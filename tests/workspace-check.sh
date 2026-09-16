@@ -29,6 +29,10 @@
 #   T  the Transcript (3c): the band holds the lines `ytq` wrote, in the
 #      order ytq.log has them, and goes on holding them across the rename
 #      that rotation is -- driven by a real ytq writing a real 4 MiB log
+#   V  Services (3d): the report's acceptance test. Press the key, read the
+#      command line the Transcript printed BEFORE it ran, run that exact
+#      line in a shell with a fresh HOME, and compare what each left --
+#      what was printed, what was written, and the exit status
 #
 # Nothing here touches the real queue, archive folder or terminal: every run
 # has a throwaway HOME and its own private tmux server.
@@ -50,6 +54,9 @@ SSTR=${SSTR:-$ROOT/target/release/sstr}
 # The Transcript follows ytq's log, so the other half of that comparison is
 # ytq itself writing it -- not the harness writing something log-shaped.
 YTQ=${YTQ:-$ROOT/target/release/ytq}
+# Serve binds a port. A high one, and the check steps aside if anything is
+# already there rather than failing for a reason that is not the Workspace's.
+SERVE_PORT=${SERVE_PORT:-18099}
 
 skip() { printf '  --      workspace-check skipped: %s\n' "$1"; exit 0; }
 command -v tmux >/dev/null 2>&1 || skip "no tmux"
@@ -84,6 +91,10 @@ H="$W/home"
 A="$H/Videos/Archive"
 mkdir -p "$H/.config/copal" "$A/SharedVM/deeper" "$A/Notes"
 printf 'ARCHIVE_DIR=%s\n' "$A" > "$H/.config/copal/media.conf"
+# The report's settings for the Workspace. PLAYER is a stand-in, because a
+# Service must never reach the real mpv; SERVE is the port above.
+printf 'SERVE=127.0.0.1:%s\n' "$SERVE_PORT" >> "$H/.config/copal/media.conf"
+printf 'PLAYER=%s\n' "$ROOT/tests/standin/player" >> "$H/.config/copal/media.conf"
 # Names chosen so byte order and a human's order differ: Z before a, and an
 # accent past both. The Browser and `ls` must agree anyway.
 for f in "Zeta-report.sstr" "alpha.txt" "beta.sstr" "café.txt"; do
@@ -138,8 +149,12 @@ start() {
     _size=$1; shift
     _w=${_size%x*}; _h=${_size#*x}
     T kill-session -t ws 2>/dev/null
+    # sstr AND ytq ARE ON THE PATH, because a Service is a command line and
+    # a command line names `sstr`, not a path into a build directory. On the
+    # guest copal-build puts them in ~/.local/bin; here it is the release
+    # directory, and the standins come first so nothing reaches a real player.
     T new-session -d -s ws -x "$_w" -y "$_h" \
-        env -i HOME="$H" PATH="/usr/bin:/bin" TERM=xterm-256color \
+        env -i HOME="$H" PATH="$ROOT/tests/standin:$ROOT/target/release:/usr/bin:/bin" TERM=xterm-256color \
         "$WS" "$@"
     _n=0
     while ! T capture-pane -p -t ws 2>/dev/null | grep -q 'Workspace'; do
@@ -196,6 +211,54 @@ band_want() {
     tail -n "$_tr" "$_log" | shown | cut -c"1-$(( _w - 12 ))" | sed 's/ *$//'
 }
 
+# The entry drawn in reverse video in the deepest column: the selection.
+#
+# tmux writes the reverse video it captured in whatever SGR form is shortest
+# for the cell before it: '\033[7m' after a partial redraw, but '\033[0;7m'
+# after a full one. Neither contains the other as text, so the parameters are
+# read properly instead of matched as a string: reverse present, and dim
+# absent, which is how the selection in the deepest column is told from the
+# dim reverse of a parent column's. The first three rows are the title bar
+# (bold and reverse), the Shelf and the rule.
+selected() {
+    T capture-pane -p -e -t ws | awk -v e="$(printf '\033')" '
+        NR <= 3 { next }
+        {
+            s = $0
+            while (match(s, e "\\[[0-9;]*m")) {
+                params = substr(s, RSTART + 2, RLENGTH - 3)
+                rest = substr(s, RSTART + RLENGTH)
+                rev = 0; dim = 0
+                n = split(params, p, ";")
+                for (i = 1; i <= n; i++) {
+                    if (p[i] == "7") rev = 1
+                    if (p[i] == "2") dim = 1
+                }
+                if (rev && !dim) {
+                    m = index(rest, e)
+                    print (m ? substr(rest, 1, m - 1) : rest)
+                    exit
+                }
+                s = rest
+            }
+        }' | sed 's/[ >|]*$//'
+}
+
+# Walk to a named entry, however the folder happens to be ordered. Down stops
+# at the last entry rather than wrapping, so this goes back to the top first --
+# otherwise a second call, for a name above the one already selected, would
+# walk into its own bound and never find it.
+select_name() {
+    _want=$1; _i=0
+    while [ "$_i" -lt 12 ]; do keys Up; _i=$(( _i + 1 )); done
+    _i=0
+    while [ "$(selected)" != "$_want" ]; do
+        keys Down; _i=$(( _i + 1 ))
+        [ "$_i" -gt 24 ] && return 1
+    done
+    return 0
+}
+
 # ---- C: the columns against ls ---------------------------------------------
 for size in 110x30 80x24 50x12; do
     w=${size%x*}; h=${size#*x}
@@ -249,29 +312,6 @@ if start 110x30; then
     # is told from the dim reverse of a parent column's. The first three rows
     # are the title bar (bold and reverse), the Shelf and the rule, and the
     # columns start under them.
-    selected() {
-        T capture-pane -p -e -t ws | awk -v e="$(printf '\033')" '
-            NR <= 3 { next }
-            {
-                s = $0
-                while (match(s, e "\\[[0-9;]*m")) {
-                    params = substr(s, RSTART + 2, RLENGTH - 3)
-                    rest = substr(s, RSTART + RLENGTH)
-                    rev = 0; dim = 0
-                    n = split(params, p, ";")
-                    for (i = 1; i <= n; i++) {
-                        if (p[i] == "7") rev = 1
-                        if (p[i] == "2") dim = 1
-                    }
-                    if (rev && !dim) {
-                        m = index(rest, e)
-                        print (m ? substr(rest, 1, m - 1) : rest)
-                        exit
-                    }
-                    s = rest
-                }
-            }' | sed 's/[ >|]*$//'
-    }
 
     same "K the first entry is selected at the start" "$first" "$(selected)"
     keys Down
@@ -300,44 +340,6 @@ fi
 
 # ---- I: the Inspector (3b) -------------------------------------------------
 if start 110x30; then
-    selected() {
-        T capture-pane -p -e -t ws | awk -v e="$(printf '\033')" '
-            NR <= 3 { next }
-            {
-                s = $0
-                while (match(s, e "\\[[0-9;]*m")) {
-                    params = substr(s, RSTART + 2, RLENGTH - 3)
-                    rest = substr(s, RSTART + RLENGTH)
-                    rev = 0; dim = 0
-                    n = split(params, p, ";")
-                    for (i = 1; i <= n; i++) {
-                        if (p[i] == "7") rev = 1
-                        if (p[i] == "2") dim = 1
-                    }
-                    if (rev && !dim) {
-                        m = index(rest, e)
-                        print (m ? substr(rest, 1, m - 1) : rest)
-                        exit
-                    }
-                    s = rest
-                }
-            }' | sed 's/[ >|]*$//'
-    }
-    # Walk to a named entry, however the folder happens to be ordered. Down
-    # stops at the last entry rather than wrapping, so this goes back to the
-    # top first -- otherwise a second call, for a name above the one already
-    # selected, would walk into its own bound and never find it.
-    select_name() {
-        _want=$1; _i=0
-        while [ "$_i" -lt 10 ]; do keys Up; _i=$(( _i + 1 )); done
-        _i=0
-        while [ "$(selected)" != "$_want" ]; do
-            keys Down; _i=$(( _i + 1 ))
-            [ "$_i" -gt 20 ] && return 1
-        done
-        return 0
-    }
-
     if select_name "capture.sstr"; then
         # The Inspector's first line is the name, then a blank, then what
         # `sstr verify` prints -- cut to the pane, which is a third of 110.
@@ -469,6 +471,193 @@ else
     bad "T the Workspace did not draw for the rotation"
 fi
 rm -f "$LOG" "$LOG.1"
+
+# ---- V: Services (3d) -------------------------------------------------------
+# THE REPORT'S ACCEPTANCE TEST, run against the real binary:
+#
+#   1. drive the Workspace to the selection and press the key;
+#   2. read the command line the Transcript printed BEFORE it ran;
+#   3. run that exact line in a shell, with a fresh HOME;
+#   4. compare what each left.
+#
+# THE WINDOW IS 200 COLUMNS WIDE HERE and that is not cosmetic. A line is
+# drawn cut to the pane, and `sstr play LONG -o LONG` names the path twice;
+# at 110 columns the check would be reading half a command line and running
+# it. The Workspace is being asked what it printed, so it is asked at a size
+# where the answer is whole.
+VW=200; VH=30
+FRESH="$W/fresh-home"; mkdir -p "$FRESH"
+# A fresh HOME, and none of the Workspace's environment: a command line that
+# only works inside the window it came from is not a command line.
+in_a_shell() { env -i HOME="$FRESH" PATH="$ROOT/target/release:/usr/bin:/bin" sh -c "$1" 2>&1; }
+
+# The last command line the Transcript printed. Looked for by its shape
+# rather than by counting lines back, so a Service that prints as well as
+# runs cannot shift it.
+said() { band $VW $VH | grep -v '^$' | cut -c10- | grep -E '^(sstr|cat|mpv|vlc) ' | tail -1; }
+# The last line of the band: a Service's outcome.
+outcome() { band $VW $VH | grep -v '^$' | cut -c10- | tail -1; }
+# What the LAST Service to take the terminal wrote there.
+#
+# THE PANE STILL HOLDS THE ONE BEFORE IT. Leaving the alternate screen puts
+# back the ordinary screen, which is where the previous Service also wrote --
+# so a capture of the whole pane is two Services' output run together, and a
+# comparison against one command line would fail for a reason that is not
+# the Workspace's. The Workspace prints each command line above its own
+# output, as a shell shows what was typed, so the last of them is the mark to
+# read from.
+# AND awk -v IS NOT THE WAY TO HAND IT THE MARK. awk runs escape processing
+# over a -v value, so the `\'` in a quoted name -- `'Don'\''t Look Up.sstr'`,
+# which is the whole point of the awkward capture -- loses its backslash
+# before the comparison, and the mark never matches. grep -F -x compares the
+# bytes.
+on_the_terminal() {
+    _all=$(screen | sed 's/ *$//')
+    _n=$(printf '%s\n' "$_all" | grep -n -F -x -- "$1" | tail -1 | cut -d: -f1)
+    if [ -n "$_n" ]; then
+        printf '%s\n' "$_all" | sed -n "$(( _n + 1 )),\$p"
+    else
+        printf '%s\n' "$_all"
+    fi | grep -v 'press a key to return to the Workspace' | grep -v '^$'
+}
+
+# A capture whose name a shell would take apart if it were not quoted. It is
+# a name a person can make, and ytq writes names with spaces and apostrophes
+# every day.
+AWKWARD="Don't Look Up.sstr"
+"$SSTR" record "$A/$AWKWARD" --input "$W/payload.txt" --type text/plain \
+    --note 'a name that needs quoting' >/dev/null 2>&1 || bad "V could not record the awkward capture"
+
+if start "${VW}x${VH}"; then
+    if select_name "capture.sstr"; then
+        # -- Verify: a report a person reads, so it takes the terminal --
+        keys v; sleep 1.5
+        got=$(on_the_terminal "sstr verify $A/capture.sstr")
+        keys Enter; sleep 0.8
+        line=$(said)
+        same "V the line Verify printed is sstr verify on the selection" \
+            "sstr verify $A/capture.sstr" "$line"
+        want=$(in_a_shell "$line" | sed 's/ *$//' | grep -v '^$')
+        same "V Verify equals its own command line, run in a shell" "$want" "$got"
+        same "V and the Transcript says how it went" "Verify ok" "$(outcome)"
+
+        # THE LINE IS PRINTED BEFORE IT RUNS, not after. On screen that is an
+        # order: the command line is above the outcome, never below it.
+        # EACH ROW IS FOUND BY WHAT IT IS, not by which match came first.
+        # Asking only whether the first of two matches precedes the second is
+        # true however they are ordered, and it passed against a Workspace
+        # that said the line after the outcome.
+        rows=$(band $VW $VH | grep -v '^$' | cut -c10-)
+        cmdrow=$(printf '%s\n' "$rows" | grep -n '^sstr verify ' | tail -1 | cut -d: -f1)
+        outrow=$(printf '%s\n' "$rows" | grep -n '^Verify ok$' | tail -1 | cut -d: -f1)
+        if [ -n "$cmdrow" ] && [ -n "$outrow" ] && [ "$cmdrow" -lt "$outrow" ]; then
+            ok "V the command line is said before the outcome, not after"
+        else
+            bad "V the command line was not said first: line at row ${cmdrow:-none}, outcome at row ${outrow:-none}"
+        fi
+    else
+        bad "V could not select the capture"
+    fi
+
+    # -- Export: a file written, and the same file when the line is typed --
+    if select_name "capture.sstr"; then
+        keys x; sleep 2
+        keys Enter; sleep 0.8
+        line=$(said)
+        out=$(printf '%s' "$line" | sed 's/.* -o //')
+        if [ -f "$out" ]; then
+            ok "V Export wrote the file its command line named"
+            mv "$out" "$W/from-the-workspace"
+            in_a_shell "$line" >/dev/null 2>&1
+            if cmp -s "$W/from-the-workspace" "$out"; then
+                ok "V Export leaves the same bytes as its command line run in a shell"
+            else
+                bad "V Export and its command line left different bytes"
+            fi
+            rm -f "$out" "$W/from-the-workspace"
+        else
+            bad "V Export named $out and did not write it"
+        fi
+        # AND IT DID NOT WRITE OVER THE TRANSCRIPT BESIDE THE CAPTURE.
+        if [ "$(cat "$A/alpha.txt")" = "x" ]; then
+            ok "V Export left the other files alone"
+        else
+            bad "V Export wrote over something"
+        fi
+    else
+        bad "V could not select the capture to export"
+    fi
+
+    # -- A name that needs quoting reaches the shell as one word --
+    if select_name "$AWKWARD"; then
+        keys v; sleep 1.5
+        got=$(on_the_terminal "sstr verify '$A/Don'\\''t Look Up.sstr'")
+        keys Enter; sleep 0.8
+        line=$(said)
+        want=$(in_a_shell "$line" | sed 's/ *$//' | grep -v '^$')
+        same "V a name with a space and an apostrophe survives the shell" "$want" "$got"
+        if printf '%s' "$got" | grep -q 'stream'; then
+            ok "V and it really verified the capture, rather than a shell error"
+        else
+            bad "V the awkward name did not verify: $got"
+        fi
+    else
+        bad "V could not select $AWKWARD"
+    fi
+
+    # -- A folder is opened, not sent a verb --
+    if select_name "SharedVM"; then
+        if screen | sed -n "${VH}p" | grep -q 'nothing to send this selection'; then
+            ok "V a folder is offered no Services"
+        else
+            bad "V a folder was offered Services: $(screen | sed -n "${VH}p")"
+        fi
+    else
+        bad "V could not select the folder"
+    fi
+    stop
+else
+    bad "V the Workspace did not draw"
+fi
+
+# -- Serve: what it hands a player equals what the command line hands one --
+if command -v curl >/dev/null 2>&1 && ! nc -z 127.0.0.1 "$SERVE_PORT" 2>/dev/null; then
+    if start "${VW}x${VH}"; then
+        if select_name "capture.sstr"; then
+            keys s; sleep 1.5
+            line=$(said)
+            same "V the line Serve printed is sstr play --serve on the selection" \
+                "sstr play $A/capture.sstr --serve 127.0.0.1:$SERVE_PORT" "$line"
+            pid=$(outcome | sed -n 's/^Serve started, pid \([0-9]*\)$/\1/p')
+            if [ -n "$pid" ]; then
+                ok "V Serve says it started, and its pid"
+                _n=0
+                while ! nc -z 127.0.0.1 "$SERVE_PORT" 2>/dev/null; do
+                    _n=$(( _n + 1 )); [ $_n -gt 50 ] && break; sleep 0.1
+                done
+                curl -s "http://127.0.0.1:$SERVE_PORT/" > "$W/served" 2>/dev/null
+                in_a_shell "sstr play $A/capture.sstr" > "$W/played" 2>/dev/null
+                if cmp -s "$W/served" "$W/played"; then
+                    ok "V what Serve hands a player is what sstr play writes"
+                else
+                    bad "V the served bytes differ from sstr play's"
+                fi
+                kill "$pid" 2>/dev/null
+                rm -f "$W/served" "$W/played"
+            else
+                bad "V Serve did not say a pid: $(outcome)"
+            fi
+        else
+            bad "V could not select the capture to serve"
+        fi
+        stop
+    else
+        bad "V the Workspace did not draw to serve"
+    fi
+else
+    printf '  --      V Serve not checked: no curl, or something is on port %s\n' "$SERVE_PORT"
+fi
+rm -f "$A/$AWKWARD"
 
 # ---- S: where it starts ----------------------------------------------------
 if start 80x24; then

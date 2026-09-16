@@ -75,7 +75,7 @@ chain back to the specification is unbroken.
 | **3a** | the frame and the **Browser**: Miller columns over folders, starting at `ARCHIVE_DIR`; the terminal, the layout, the keys that move | at three window sizes the columns show what `ls` shows, in the same order, with the same selection after the same keys; nothing is drawn outside the frame. **Done**: `make workspace-check`, 16 of 16; commit `d6826e1` |
 | **3b** | the **Inspector**: a capture's header, notes and license, `verify`'s summary, a video's notes, a folder's count | for every file in a fixture folder, what the Inspector shows equals what `sstr verify` and the file's own header say, field for field. **Done**: `make workspace-check`, 23 of 23 -- the capture's pane compared line for line with `sstr verify` over a capture `sstr` itself recorded. `make check` is 316 |
 | **3c** | the **Transcript**: `ytq.log` and sstr's own events in one pane, following as they are written | lines appear in the order the log has them, with the same text ytq wrote; a rotated `ytq.log.1` does not lose the line at the seam. **Done**: `make workspace-check`, 34 of 34 -- the band held against a log a real `ytq` wrote, and followed across the rename `ytq` itself makes past 4 MiB. `make check` is 327 |
-| 3d | **Services**: Play, Paced, Serve, Verify, Export MP4, Open as Text, Armor, Queue — each printed in the Transcript as a command line before it runs | the acceptance test above: every Service equals its own printed command line, run in a shell |
+| **3d** | **Services**: Play, Paced, Serve, Verify, Export MP4, Open as Text, Armor — each printed in the Transcript as a command line before it runs | the acceptance test above: every Service equals its own printed command line, run in a shell. **Done**: `make workspace-check`, 47 of 47 -- Verify, Export and Serve each driven by key, their printed line read off the screen and run in a shell with a fresh HOME, and what the two left compared. `make check` is 340. Queue moves to 3e, with the rest of the queue |
 | 3e | the **Shelf** and the **Queue**: items kept for later, and ytq's queue as one more object to browse, inspect and send Retry or Forget | a queue entry inspected and retried through the Workspace leaves `queue.json` exactly as `ytq` doing the same leaves it |
 
 ## Deviations, written down as they are made
@@ -193,6 +193,71 @@ chain back to the specification is unbroken.
   what it made -- so a test could have its fixture deleted under it by a
   neighbour that had just finished. It failed about one run in ten, which is
   the worst rate for a test to fail at.
+
+### Step 3d
+
+- **A Service is a string, built once, printed, then handed to `sh -c`.** Not
+  an argv the Workspace assembles twice -- once to show and once to run --
+  because two constructions drift and only one of them is the one a person
+  reads. What runs *is* what was printed, and the acceptance test is
+  therefore about whether that line does what the pane claims, not about
+  whether the Workspace was honest in reporting it.
+- **The line is said before it runs, and it is said whatever happens.** A
+  Service that fails leaves behind the line to retype; a record of what was
+  asked can be acted on, and a record of what happened cannot.
+- **Every Service that prints takes the terminal.** There was a third kind at
+  first -- run it captured, put the output in the Transcript -- and Verify and
+  Export were both that kind, on the reasoning that a report belongs in a log.
+  `sstr verify` writes eleven lines and `sstr play -o` writes eleven; the band
+  is three; and what those eleven pushed out of it was the command line, which
+  is the one line the band exists to show. The kind is gone rather than
+  narrowed. The Transcript keeps the record -- the line, and how it went --
+  and output goes where output goes.
+- **The command line is echoed on the terminal too, above its own output**, as
+  a shell shows what was typed above what it printed. Leaving the alternate
+  screen puts back the ordinary one, which still holds the last Service's
+  output; without the line between them there is nothing to say where one ends
+  and the next begins. The check reads that mark.
+- **A Service's standard input is closed, and a text capture is shown rather
+  than paged.** The report says "shown in a pager". The window's key reader
+  owns the real stdin for as long as the window lives and cannot be paused, so
+  handing the same terminal to a pager would be two readers racing for every
+  byte typed. What happens instead: the output goes to the terminal, and the
+  Workspace waits for one key before drawing itself again.
+- **Export never writes over a file.** `sstr play cap.sstr -o cap.txt` is what
+  a text capture wants to be called, and `cap.txt` is exactly what ytq calls
+  the transcript sitting beside `cap.sstr`. A person typing that line can see
+  what they are about to destroy; someone pressing `x` cannot. So the line
+  names a free one -- `cap-1.txt` -- and shows it before running.
+- **Export says what it will write**: `x Export MP4` on a video, `x Export
+  TXT` on a transcript, from the capture's own `content_type`.
+- **PLAYER and SERVE come from the report's settings table** (V-D), and Play
+  on a video is `sstr play cap.sstr | mpv -` -- a pipeline, which is still
+  something a person could have typed. `sstr play` writes the payload to
+  standard output, and an MP4 is not something to do to a terminal.
+- **No Service may take a key the Browser moves with.** The keys that move are
+  read first, so a clash would not misfire; it would make the Service
+  unreachable, with nothing to say so. A unit test walks every Service of
+  every kind of selection and asserts none of them takes `hjklq`.
+- **The quoting is the boundary, because the line goes to `sh`.** ytq writes
+  names with spaces and apostrophes, and a file called `; rm -rf x` is one a
+  person can make. `services::quote` is checked by running its output through
+  a real shell and asking what word arrived, and the harness records a capture
+  called `Don't Look Up.sstr` and sends it Verify on the real screen.
+- **The check runs at 200 columns**, and that is not cosmetic: a line is drawn
+  cut to the pane, `sstr play LONG -o LONG` names the path twice, and at 110
+  columns the check would be reading half a command line and then running it.
+  The Workspace is asked what it printed at a size where the answer is whole.
+- **`awk -v` is not the way to hand a mark to awk.** It runs escape processing
+  over the value, so the `\'` in `'Don'\''t Look Up.sstr'` -- the whole point
+  of that capture -- lost its backslash before the comparison and the mark
+  never matched. `grep -F -x` compares the bytes.
+- **One of these checks was vacuous, and breaking the code is what found it.**
+  "the command line is said before the outcome" asked whether the first of two
+  matches preceded the second, which is true however they are ordered; it
+  passed against a Workspace altered to say the line *after* the outcome. Each
+  row is now found by what it is. The same pass caught a Workspace with the
+  quoting removed, in three other checks.
 
 ## Decisions already made
 

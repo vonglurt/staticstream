@@ -6,9 +6,13 @@
 //! Services sent to the selection.
 //!
 //! Step 3a drew the frame and the **Browser**, step 3b the **Inspector**,
-//! and step 3c the **Transcript**. Services (3d) and the Shelf and Queue
-//! (3e) have their places on the screen and say which step fills them, so the
-//! window is honest about what it does not do yet.
+//! step 3c the **Transcript** and step 3d **Services**. The Shelf and the
+//! Queue (3e) have their places on the screen and say which step fills them,
+//! so the window is honest about what it does not do yet.
+//!
+//! **A verb is always something a person could have typed.** A Service is a
+//! command line, written into the Transcript and then handed to `sh -c`
+//! exactly as written -- see [`services`].
 //!
 //! **The Inspector does not read a capture itself.** It calls
 //! [`crate::format::reader::inspect`] and draws the lines `sstr verify` would
@@ -25,14 +29,17 @@
 //! `stty` for raw mode, escape sequences for the screen, `TIOCGWINSZ` for its
 //! size, and keys read on a thread. No curses, and no second terminal layer.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::process::ExitCode;
+use std::process::{Child, Command, ExitCode, Stdio};
 use std::time::Duration;
 
 use crate::ytq::term::{self, cut, ljust, Frame, Key, Keys, Screen, Seg, Style, Term};
 use crate::ytq::{runner, settings};
 
+pub mod services;
 pub mod transcript;
+pub use services::{How, Service};
 pub use transcript::Transcript;
 
 /// The nouns and the one plural of verbs, and where each word comes from.
@@ -83,9 +90,19 @@ sstr-workspace -- the Workspace: a Browser over folders of streams
 The Inspector shows the selection: for a capture, what `sstr verify` says
 about it, in the same words.
 
+Services are sent to the selection with one key, and the foot of the window
+says which the selection takes:
+
+  p Play      P Paced     s Serve     v Verify
+  x Export    t Text      a Armor
+
+EVERY SERVICE IS A COMMAND LINE, written into the Transcript before it runs
+and then run exactly as written -- so it can be read, copied, and typed
+again. A Service that prints takes the terminal until a key is pressed.
+
 ARCHIVE_DIR comes from ~/.config/copal/media.conf, then ~/.config/ytq/config,
-as ytq reads them. Every Service will also be a command line, shown in the
-Transcript before it runs.
+as ytq reads them; PLAYER (mpv) and SERVE (127.0.0.1:8080) come from the same
+files.
 ";
 
 /// One entry in a folder, as `ls` would list it.
@@ -261,7 +278,7 @@ fn scroll(col: &mut Column, rows: i64) {
 
 /// One screen. The rows the Browser owns are drawn column by column, so a row
 /// carries a piece from each -- which is why a row holds several pieces.
-pub fn frame_of(b: &Browser, (h, w): (i64, i64), colors: bool, home: &Path, t: &Transcript) -> Frame {
+pub fn frame_of(b: &Browser, (h, w): (i64, i64), colors: bool, home: &Path, t: &Transcript, svcs: &[Service]) -> Frame {
     let mut f = Frame::new(h.max(0) as usize);
     let color = |c: u8| colors.then_some(c);
     let dim = Style { dim: true, ..Style::default() };
@@ -361,7 +378,7 @@ pub fn frame_of(b: &Browser, (h, w): (i64, i64), colors: bool, home: &Path, t: &
         let label = if r == 0 { "Transcript " } else { "           " };
         f.put(h - 1 - tr + r, 0, &cut(&format!(" {label}{text}"), w), dim);
     }
-    f.put(h - 1, 0, &cut(" Services (3d):  up/down move   right open   left back   q leave", w), dim);
+    f.put(h - 1, 0, &cut(&format!(" {}", services::line_for(svcs)), w), dim);
     f
 }
 
@@ -436,6 +453,98 @@ pub fn inspect_lines(sel: Option<&Path>) -> Vec<String> {
     v
 }
 
+/// How a finished command is reported: `ok`, or what went wrong.
+fn outcome(st: &std::io::Result<std::process::ExitStatus>) -> String {
+    match st {
+        Ok(s) if s.success() => "ok".into(),
+        Ok(s) => match s.code() {
+            Some(c) => format!("exit {c}"),
+            None => "killed by a signal".into(),
+        },
+        Err(e) => format!("could not run: {e}"),
+    }
+}
+
+/// Send a Service to the selection.
+///
+/// **THE LINE IS SAID BEFORE IT RUNS.** Not after, and not only when it
+/// succeeds: the Transcript is a record of what was asked, so a Service that
+/// fails still leaves behind the line a person can retype to watch it fail
+/// themselves. And what runs is the string that was said -- one string, built
+/// once, printed and then executed -- so there is no second construction for
+/// the first to drift from.
+fn send(sv: &Service, t: &mut Transcript, keys: &Keys, screen: &mut Screen, running: &mut Vec<(String, Child)>) {
+    t.say(&sv.line);
+    let sh = |line: &str| {
+        let mut c = Command::new("sh");
+        c.arg("-c").arg(line).stdin(Stdio::null());
+        c
+    };
+    match sv.how {
+        How::Terminal => {
+            // THE SERVICE GETS THE TERMINAL, NOT A COPY OF IT. Paced text
+            // arriving as it was recorded is the output of a program writing
+            // to a terminal; caught and replayed into a pane it would be a
+            // transcript of a teletype rather than one.
+            //
+            // Its stdin is closed. The window's key reader owns the real
+            // stdin for as long as the window lives and cannot be paused, so
+            // handing the same terminal to a second reader would be a race
+            // over every byte typed. That is why a text capture is shown and
+            // waited on here rather than handed to a pager -- see
+            // docs/phase-3.md.
+            let _ = term::suspend();
+            // THE LINE IS SHOWN ON THE TERMINAL TOO, above its own output,
+            // the way a shell shows what was typed above what it printed.
+            // Without it the screen holds the last Service's output and this
+            // one's with nothing to say where one ends and the other begins.
+            println!("{}", sv.line);
+            let _ = std::io::stdout().flush();
+            let st = sh(&sv.line).status();
+            let said = outcome(&st);
+            println!("\r\n-- {} {} -- press a key to return to the Workspace --", sv.name, said);
+            let _ = std::io::stdout().flush();
+            let _ = term::raw_again();
+            // Long, but not forever: a Workspace nobody is at comes back by
+            // itself rather than sitting outside its own screen.
+            let _ = keys.next(Duration::from_secs(600));
+            let _ = term::resume();
+            screen.invalidate();
+            t.say(&format!("{} {}", sv.name, said));
+        }
+        How::Background => {
+            match sh(&sv.line).stdout(Stdio::null()).stderr(Stdio::null()).spawn() {
+                Ok(child) => {
+                    t.say(&format!("{} started, pid {}", sv.name, child.id()));
+                    running.push((sv.name.clone(), child));
+                }
+                Err(e) => t.say(&format!("{} could not start: {e}", sv.name)),
+            }
+        }
+    }
+}
+
+/// Say so when something left running has finished, and stop holding it.
+///
+/// Without this a served capture that a player has finished with stays a
+/// zombie for as long as the Workspace is open, and nothing on screen ever
+/// says the server stopped.
+fn reap(running: &mut Vec<(String, Child)>, t: &mut Transcript) {
+    let mut i = 0;
+    while i < running.len() {
+        match running[i].1.try_wait() {
+            Ok(Some(status)) => {
+                let (name, _) = running.remove(i);
+                t.say(&format!("{name} {}", outcome(&Ok(status))));
+            }
+            Ok(None) => i += 1,
+            Err(_) => {
+                running.remove(i);
+            }
+        }
+    }
+}
+
 /// The Workspace itself.
 pub fn main(argv: &[String]) -> ExitCode {
     match argv.first().map(String::as_str) {
@@ -496,11 +605,14 @@ pub fn main(argv: &[String]) -> ExitCode {
     let keys = Keys::start();
     let mut screen = Screen::default();
     let mut last_size = None;
+    // What Services left running, so their ends are said and reaped.
+    let mut running: Vec<(String, Child)> = Vec::new();
 
     loop {
         // Before the frame is built, so a line written while the last one was
         // on screen is on this one. Nothing to read costs a single read.
         t.poll();
+        reap(&mut running, &mut t);
         let (h, w) = term::size();
         if last_size.map_or(false, |s| s != (h, w)) {
             screen.invalidate();
@@ -508,7 +620,11 @@ pub fn main(argv: &[String]) -> ExitCode {
         last_size = Some((h, w));
         let rows = (h as i64 - 3 - transcript_rows(h as i64)) - 3 + 1;
         scroll(b.last_mut(), rows);
-        let frame = frame_of(&b, (h as i64, w as i64), colors, &home, &t);
+        // The selection's Services: what the foot of the window offers, and
+        // what a key sends. Built once a frame, so the two cannot disagree
+        // about what `p` means.
+        let svcs = services::services_for(b.selection().as_deref(), &s);
+        let frame = frame_of(&b, (h as i64, w as i64), colors, &home, &t, &svcs);
         let _ = screen.present(&frame, (h, w));
 
         let Some(k) = keys.next(Duration::from_millis(500)) else { continue };
@@ -518,6 +634,14 @@ pub fn main(argv: &[String]) -> ExitCode {
             Key::Up | Key::Char('k') => b.move_by(-1),
             Key::Right | Key::Char('l') | Key::Enter => b.descend(),
             Key::Left | Key::Char('h') | Key::Backspace => b.ascend(),
+            // A Service, if this selection has one for that key. The keys
+            // that move come first, so no Service can take one of them.
+            Key::Char(c) => {
+                if let Some(sv) = services::by_key(&svcs, c) {
+                    let sv = sv.clone();
+                    send(&sv, &mut t, &keys, &mut screen, &mut running);
+                }
+            }
             _ => {}
         }
     }
@@ -652,7 +776,7 @@ mod tests {
                 break;
             }
         }
-        let f = frame_of(&b, (24, 100), false, &d, &quiet());
+        let f = frame_of(&b, (24, 100), false, &d, &quiet(), &[]);
         let ins_x = 2 * (100 / 3);
         let heading = f.rows[3]
             .iter()
@@ -677,7 +801,7 @@ mod tests {
         let d = fixture("nothing_is_drawn_outside_the_frame");
         let b = Browser::open(&d);
         for (h, w) in [(24i64, 80i64), (12, 50), (30, 110), (8, 20)] {
-            let f = frame_of(&b, (h, w), true, &d, &quiet());
+            let f = frame_of(&b, (h, w), true, &d, &quiet(), &[]);
             assert_eq!(f.rows.len(), h as usize, "a frame is exactly the window's rows");
             for row in &f.rows {
                 for (x, text, _) in row {

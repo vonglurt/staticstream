@@ -48,6 +48,33 @@ impl Drop for Term {
     }
 }
 
+/// The terminal as it was, without forgetting how to get back.
+///
+/// [`restore`] is the end of the window and takes the saved settings with it;
+/// this is an interruption in the middle of one, for a Service that writes
+/// output a person reads. The saved settings stay saved, so the `Term` guard
+/// still puts everything right when the window really does end.
+pub fn suspend() -> io::Result<()> {
+    let saved = SAVED.lock().unwrap_or_else(|e| e.into_inner()).clone();
+    write("\x1b[0m\x1b[?25h\x1b[?1049l")?;
+    match saved {
+        Some(s) => stty(&[&s]).or_else(|_| stty(&["sane"])),
+        None => stty(&["sane"]),
+    }
+}
+
+/// Raw mode again, with whatever a Service wrote still on the screen -- so
+/// one key can be read without waiting for a line and an Enter.
+pub fn raw_again() -> io::Result<()> {
+    stty(&["raw", "-echo"])
+}
+
+/// The window again: raw mode and the alternate screen, cleared.
+pub fn resume() -> io::Result<()> {
+    raw_again()?;
+    write("\x1b[?1049h\x1b[?25l\x1b[2J")
+}
+
 /// Undo [`Term::enter`]. Safe to call more than once.
 pub fn restore() {
     let saved = SAVED.lock().unwrap_or_else(|e| e.into_inner()).take();
