@@ -4,6 +4,10 @@
 
 **Static Stream: a stream stopped in a file, and let go again.**
 
+[![staticstream on crates.io](https://img.shields.io/crates/v/staticstream.svg?style=flat-square)](https://crates.io/crates/staticstream)
+[![MIT licence](https://img.shields.io/crates/l/staticstream.svg?style=flat-square)](https://github.com/vonglurt/staticstream/blob/main/LICENSE)
+![zero dependencies](https://img.shields.io/badge/dependencies-0-informational?style=flat-square)
+
 Light can be slowed until it seems to stand still, and released. What the
 experiments keep is the pulse's state, written into matter and read back out
 as light. A static stream does that with bytes. A stream is written into a
@@ -20,11 +24,11 @@ and nothing is decoded, so no codec is involved.
 This repository is the Rust home of the format, of the `sstr` command, of
 **ytq**, Copal's download queue that watches the clipboard, and of
 `sstr-workspace`, the terminal Workspace over both. ytq archives what it
-downloads as Static Stream by default, so the two belong together. ytq is a
-Python program in [copal](https://github.com/vonglurt/copal) today, and moves
-here piece by piece.
+downloads as Static Stream by default, so the two belong together. ytq was a Python
+program in [copal](https://github.com/vonglurt/copal); phase 2 moved every
+line of it here, and retired that one.
 
-## Status: phase 2 of 4
+## Status: phase 3 of 4
 
 The format is defined, built and measured by the Python prototype,
 `tools/copal-sstr.py` in [copal](https://github.com/vonglurt/copal). Two
@@ -38,8 +42,8 @@ reports there describe it:
 |---|---|---|
 | 0 | this repository: the workspace, the Makefile, the constants | `make check` passes on the guest and on the Mac |
 | 1 | the format library and `sstr` at parity with the prototype | Python writes and Rust reads, and the reverse, byte for byte, through the prototype's whole damage battery |
-| **2** | ytq in Rust, sharing the Python ytq's `queue.json` and locks, archiving to `.sstr` by default through `~/.config/copal/media.conf` | a queued video leaves a `.sstr` that verifies and plays back identical to the MP4 it replaced; Rust and Python ytq run side by side on one queue; only then does the binary `ytq` exist |
-| 3 | `sstr-workspace`: Browser, Inspector, Transcript, Services, Queue | every Service is a command line shown in the Transcript before it runs |
+| 2 | ytq in Rust, sharing the Python ytq's `queue.json` and locks, archiving to `.sstr` by default through `~/.config/copal/media.conf` | a queued video leaves a `.sstr` that verifies and plays back identical to the MP4 it replaced; Rust and Python ytq run side by side on one queue; only then does the binary `ytq` exist |
+| **3** | `sstr-workspace`: Browser, Inspector, Transcript, Services, Queue | every Service is a command line shown in the Transcript before it runs |
 | 4 | `make dist` for every target, and version 1's stronger outer code | binaries run on a Pi 2B and an x86_64 VM |
 
 Phases 0, 1 and 2 are done on the guest. `sstr` does everything the prototype
@@ -183,6 +187,31 @@ the Python ytq is retired.
 Run by hand, `make ytq-crosscheck` and the rest take their default and
 exercise `sstr ytq` instead, so both spellings stay covered.
 
+## Install
+
+```sh
+cargo install staticstream      # sstr, ytq and sstr-workspace
+```
+
+On a Copal machine it is already there: `copal-build` compiles
+`~/code/staticstream` on the node itself and links what it builds into
+`~/.local/bin`, first on Copal's PATH. `copal-build staticstream` rebuilds
+this one alone.
+
+### What it needs at run time
+
+Nothing to build -- the crate has no dependencies, and `cargo install` fetches
+this crate and nothing else. What the *programs* call out to, when asked:
+
+| Wanted by | Program | For |
+|---|---|---|
+| `ytq` downloads | **yt-dlp** | the download itself. It is a Python program that moves too often to embed, so ytq drives it as a subprocess, as the Python ytq did |
+| `ytq` downloads | ffmpeg | merging and tagging; without it ytq keeps what one stream gives |
+| `ytq` on a desktop | wl-clipboard or xclip, xdotool, libnotify | the clipboard, the focus check, notifications |
+| signed captures | ssh-keygen | `-Y sign` and `-Y verify`, as the prototype does |
+
+`sstr`, the format and the Workspace need none of them.
+
 ## Build
 
 ```sh
@@ -192,18 +221,20 @@ make crosscheck # sstr against tools/copal-sstr.py in ../copal, comparison by co
 make ytq-crosscheck  # the Rust ytq against the Python ytq of tests/reference
 make run ARGS='play cap.sstr --paced'
 make workspace
-make install    # sstr, sstr-workspace and ytq into ~/.local/bin
+make install    # sstr, ytq and sstr-workspace into ~/.local/bin
+make package    # the crate tarball, and what is in it -- pushes nothing
+make publish    # the one cargo publish call, gated on make check
 make tools      # cargo-make and cargo-zigbuild, for:
 make dist       # release binaries for aarch64, armv7 and x86_64 musl
 ```
 
-Everything except `tools` and `dist` needs only `cargo`. `make dist` also
-needs rustup's standard library for each target, because Alpine's `rust`
+Everything except `tools`, `dist` and `publish` needs only `cargo`. `make dist`
+also needs rustup's standard library for each target, because Alpine's `rust`
 package ships only its own.
 
 ## No external crates
 
-The crates here depend only on each other, as in
+This crate depends on nothing at all, as in
 [orrery](https://github.com/vonglurt/orrery) and
 [ascitty](https://github.com/vonglurt/ascitty). Copal's `copal-build`
 compiles `~/code` on the machine itself, and a fleet node never reaches the
@@ -211,15 +242,28 @@ internet, so a crate fetch would fail on the machines this is for.
 `make check` enforces it: `Cargo.lock` may name no package from a registry,
 and the release build runs `--offline --locked`.
 
-## The crates
+## One crate, four modules
 
-| Crate | What |
+This was five packages -- `staticstream`, `-tty`, `-cli`, `-ytq` and
+`-workspace` -- until the release. They were never four dependencies and a
+program: they depended only on each other, shared one version and would have
+published together, which is a module boundary wearing a package's clothes.
+So there is one crate, named after the repository, and one name on crates.io.
+
+| Module | What |
 |---|---|
-| `staticstream` | the format: the record layout, RS(255,223), parity, checkpoints, the writer and the reader. It also holds what the prototype had from Python's library and this workspace writes itself: zlib, SHA-256 (from orrery), CRC-32 and JSON |
-| `staticstream-tty` | the armor: a byte stream as 80-column CRC-checked lines for a serial console, and back, with what was lost as erasures |
-| `staticstream-cli` | `sstr`: record, play, verify, armor, unarmor, recv, paths |
-| `staticstream-ytq` | ytq: its queue, settings and downloads. Phase 0 has where ytq keeps things and the states an entry moves through, checked against the Python ytq's source |
-| `staticstream-workspace` | `sstr-workspace`: the terminal Workspace |
+| `format` | the `.sstr` file: the record layout, RS(255,223), parity, checkpoints, the writer and the reader. It also holds what the prototype had from Python's library and this crate writes itself: zlib, SHA-256 (from orrery), CRC-32 and JSON |
+| `tty` | the armor: a byte stream as 80-column CRC-checked lines for a serial console, and back, with what was lost as erasures |
+| `ytq` | ytq: its queue and locks, settings, the runner that drives yt-dlp, the live record and the window |
+| `workspace` | the terminal Workspace. Phase 3 draws it |
+
+| Binary | Is |
+|---|---|
+| `sstr` | record, play, verify, armor, unarmor, recv, paths -- and `sstr ytq`, which is `ytq` |
+| `ytq` | the download queue people type, and what Super+Shift+Y reaches |
+| `sstr-workspace` | the Workspace |
+
+`ytq` and `sstr ytq` are one `ytq::cli::main`, so the two names cannot drift.
 
 ## The Workspace's words
 

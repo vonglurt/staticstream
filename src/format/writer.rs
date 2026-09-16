@@ -15,10 +15,10 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::Instant;
 
-use crate::json::Value;
-use crate::record::{self, Header};
-use crate::sha256::{hex, Sha256};
-use crate::{crc32, zlib, RecordType, FLAG_DEFLATE, GROUP, MAGIC, SIGNING_NAMESPACE};
+use crate::format::json::Value;
+use crate::format::record::{self, Header};
+use crate::format::sha256::{hex, Sha256};
+use crate::format::{crc32, zlib, RecordType, FLAG_DEFLATE, GROUP, MAGIC, SIGNING_NAMESPACE};
 
 #[derive(Clone, Debug)]
 pub struct Options {

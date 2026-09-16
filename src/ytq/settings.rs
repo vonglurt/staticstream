@@ -11,8 +11,8 @@
 use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
-use crate::urls::py_strip;
-use crate::Paths;
+use crate::ytq::urls::py_strip;
+use crate::ytq::Paths;
 
 pub const DEFAULT_FORMAT: &str = "bv*[ext=mp4][vcodec^=avc1]+ba[ext=m4a]/bv*[ext=mp4]+ba[ext=m4a]/b[ext=mp4]/bv*+ba/b";
 // Exact names, not en.*: that also takes YouTube's machine translations into

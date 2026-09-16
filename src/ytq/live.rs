@@ -9,9 +9,9 @@
 //! not the one looking, and either may be the Python or the Rust ytq -- so the
 //! words here are the Python ytq's, character for character.
 
-use staticstream::json::Value;
+use crate::format::json::Value;
 
-use crate::sys;
+use crate::ytq::sys;
 
 /// `number(v)`: a float, 0.0 where there is none.
 pub fn number(v: Option<&Value>) -> f64 {
@@ -361,7 +361,7 @@ pub fn now() -> f64 {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use staticstream::json;
+    use crate::format::json;
 
     #[test]
     fn sizes_and_times() {

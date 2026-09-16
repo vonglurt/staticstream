@@ -20,16 +20,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::time::{Duration, Instant};
 
-use staticstream::json::{self, Value};
-use staticstream::sha256::{hex, Sha256};
-use staticstream::{reader, writer};
+use crate::format::json::{self, Value};
+use crate::format::sha256::{hex, Sha256};
+use crate::format::{reader, writer};
 
-use crate::live::{compact, describe, fmt_secs, fmt_size, na, number, py_str, size_of, splitext, stage, stream_of, truthy, PROGRESS_KEYS};
-use crate::log::{log, say, splitlines, Mode};
-use crate::queue::{self, status, text, title_or_url, RunLock};
-use crate::settings::{DEFAULT_FORMAT, DEFAULT_SUBS};
-use crate::urls::{first_id, py_strip, short};
-use crate::{sys, textwrap, Paths, DOWNLOADABLE, PENDING};
+use crate::ytq::live::{compact, describe, fmt_secs, fmt_size, na, number, py_str, size_of, splitext, stage, stream_of, truthy, PROGRESS_KEYS};
+use crate::ytq::log::{log, say, splitlines, Mode};
+use crate::ytq::queue::{self, status, text, title_or_url, RunLock};
+use crate::ytq::settings::{DEFAULT_FORMAT, DEFAULT_SUBS};
+use crate::ytq::urls::{first_id, py_strip, short};
+use crate::ytq::{sys, textwrap, Paths, DOWNLOADABLE, PENDING};
 
 pub const COOKIE_WORDS: [&str; 13] =
     ["sign in", "log in", "login", "cookies", "age", "bot", "private video", "members", "premium", "confirm you", "403", "restricted", "subscriber"];

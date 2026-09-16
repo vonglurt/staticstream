@@ -11,7 +11,7 @@
 //! em-dash -- and chunks laid greedily into lines, a word longer than a line
 //! broken at a hyphen where it can be.
 
-use crate::urls::{html_unescape, py_strip};
+use crate::ytq::urls::{html_unescape, py_strip};
 
 /// textwrap's whitespace: ASCII only, as `_whitespace = '\t\n\x0b\x0c\r '`.
 fn tw_space(c: char) -> bool {

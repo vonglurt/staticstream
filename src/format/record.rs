@@ -14,8 +14,8 @@
 //! prototype's captures are read by this code, and this code's by the
 //! prototype.
 
-use crate::sha256::Sha256;
-use crate::{body_len, crc32, rs, RecordType, HDR_BARE, HDR_COPY, HDR_DISK, HDR_PLAIN, K, MAX_PLAIN, NSYM, SYNC, SYNC2};
+use crate::format::sha256::Sha256;
+use crate::format::{body_len, crc32, rs, RecordType, HDR_BARE, HDR_COPY, HDR_DISK, HDR_PLAIN, K, MAX_PLAIN, NSYM, SYNC, SYNC2};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Header {

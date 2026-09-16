@@ -15,5 +15,5 @@
 
 fn main() {
     let argv: Vec<String> = std::env::args().skip(1).collect();
-    std::process::exit(staticstream_ytq::cli::main(&argv));
+    std::process::exit(staticstream::ytq::cli::main(&argv));
 }

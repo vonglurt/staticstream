@@ -19,16 +19,16 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
-use staticstream::json::{self, Value};
+use crate::format::json::{self, Value};
 
-use crate::cli::read_clipboard;
-use crate::live::{live_view, number};
-use crate::log::{log, Mode};
-use crate::queue::{self, status, text, title_or_url, RunLock};
-use crate::runner::{self, brave_ready, run_timeout, Ran, Runner};
-use crate::term::{self, Frame, Key, Keys, Screen, Style, Term};
-use crate::urls::{as_url, py_strip, short};
-use crate::{sys, HISTORY, ORDER};
+use crate::ytq::cli::read_clipboard;
+use crate::ytq::live::{live_view, number};
+use crate::ytq::log::{log, Mode};
+use crate::ytq::queue::{self, status, text, title_or_url, RunLock};
+use crate::ytq::runner::{self, brave_ready, run_timeout, Ran, Runner};
+use crate::ytq::term::{self, Frame, Key, Keys, Screen, Style, Term};
+use crate::ytq::urls::{as_url, py_strip, short};
+use crate::ytq::{sys, HISTORY, ORDER};
 
 const KEYS: &str = " a add  d delete  r retry  c continue with Brave's cookies  o open in Brave  p pause  h h clear history  q quit";
 const EMPTY: &str = "Nothing queued. Copy a video URL while this window is focused, or press a.";

@@ -15,10 +15,10 @@ use std::io::{self, Read, Write};
 use std::os::unix::process::CommandExt;
 use std::process::{Command, Stdio};
 
-use staticstream::json::{self, Value};
+use crate::format::json::{self, Value};
 
-use crate::log::log;
-use crate::{sys, Paths, PENDING};
+use crate::ytq::log::log;
+use crate::ytq::{sys, Paths, PENDING};
 
 /// A field of an entry as text, "" when absent or not a string.
 pub fn text<'a>(v: &'a Value, key: &str) -> &'a str {
@@ -148,7 +148,7 @@ impl RunLock {
             for it in items.iter_mut() {
                 if status(it) == "downloading" {
                     let phase = it.get("live").and_then(|l| l.get("phase")).and_then(|p| p.as_str()).unwrap_or("no step recorded").to_string();
-                    log(paths, &format!("{}: left 'downloading' ({}) by a runner that is gone; back in the queue", crate::urls::short(text(it, "url")), phase));
+                    log(paths, &format!("{}: left 'downloading' ({}) by a runner that is gone; back in the queue", crate::ytq::urls::short(text(it, "url")), phase));
                     it.set("status", Value::str("queued"));
                     it.set("progress", Value::str(""));
                     it.set("live", Value::Obj(Vec::new()));

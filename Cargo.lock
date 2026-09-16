@@ -4,35 +4,4 @@ version = 3
 
 [[package]]
 name = "staticstream"
-version = "0.1.0"
-
-[[package]]
-name = "staticstream-cli"
-version = "0.1.0"
-dependencies = [
- "staticstream",
- "staticstream-tty",
- "staticstream-ytq",
-]
-
-[[package]]
-name = "staticstream-tty"
-version = "0.1.0"
-dependencies = [
- "staticstream",
-]
-
-[[package]]
-name = "staticstream-workspace"
-version = "0.1.0"
-dependencies = [
- "staticstream",
- "staticstream-ytq",
-]
-
-[[package]]
-name = "staticstream-ytq"
-version = "0.1.0"
-dependencies = [
- "staticstream",
-]
+version = "0.2.0"

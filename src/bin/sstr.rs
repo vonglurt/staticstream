@@ -23,11 +23,11 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{self, RecvTimeoutError};
 use std::time::{Duration, Instant};
 
-use staticstream::json::{self, Value};
-use staticstream::reader::{self, Erasures, Reader, Source};
-use staticstream::sha256::{hex, Sha256};
-use staticstream::writer::{self, Writer};
-use staticstream_tty::{self as tty, Unarmor};
+use staticstream::format::json::{self, Value};
+use staticstream::format::reader::{self, Erasures, Reader, Source};
+use staticstream::format::sha256::{hex, Sha256};
+use staticstream::format::writer::{self, Writer};
+use staticstream::tty::{self as tty, Unarmor};
 
 const USAGE: &str = "\
 sstr -- Static Stream: record a stream into a file, and play it back as one
@@ -259,7 +259,7 @@ fn cmd_record(raw: &[String]) -> Result<i32, String> {
         n => n,
     };
     let chunk = (a.num::<usize>("--chunk", 65536)? / align * align).max(align);
-    let group = a.num::<usize>("--group", staticstream::GROUP)?.max(1);
+    let group = a.num::<usize>("--group", staticstream::format::GROUP)?.max(1);
     let ckpt_records = a.num::<usize>("--checkpoint-records", 64)?.max(1);
     let ckpt_secs = a.num::<f64>("--checkpoint-secs", 10.0)?;
     let mut meta = Value::obj(vec![
@@ -543,7 +543,7 @@ fn client(mut conn: TcpStream, input: &str, ctype: &str, follow: bool, opts: rea
 }
 
 fn paths() -> i32 {
-    let Some(p) = staticstream_ytq::Paths::from_env() else {
+    let Some(p) = staticstream::ytq::Paths::from_env() else {
         eprintln!("sstr paths: HOME is not set");
         return 1;
     };
@@ -563,7 +563,7 @@ fn main() -> ExitCode {
             Ok(0)
         }
         Some("-V" | "--version") => {
-            println!("sstr {} (Static Stream format v{})", env!("CARGO_PKG_VERSION"), staticstream::FORMAT_VERSION);
+            println!("sstr {} (Static Stream format v{})", env!("CARGO_PKG_VERSION"), staticstream::format::FORMAT_VERSION);
             Ok(0)
         }
         Some("record" | "write") => cmd_record(rest),
@@ -573,7 +573,7 @@ fn main() -> ExitCode {
         Some("unarmor") => cmd_unarmor(rest),
         Some("recv") => cmd_recv(rest),
         Some("paths") => Ok(paths()),
-        Some("ytq") => Ok(staticstream_ytq::cli::main(rest)),
+        Some("ytq") => Ok(staticstream::ytq::cli::main(rest)),
         Some(verb) => Err(format!("no verb '{verb}'\n\n{USAGE}")),
     };
     match result {

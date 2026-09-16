@@ -25,25 +25,25 @@ command -v rustup >/dev/null 2>&1 || { echo "error: no rustup -- a cross build n
 [tasks.dist-aarch64]
 dependencies = ["preflight"]
 script = '''
-cargo zigbuild --release --workspace --target aarch64-unknown-linux-musl
+cargo zigbuild --release --target aarch64-unknown-linux-musl
 mkdir -p dist/aarch64-unknown-linux-musl
-cp target/aarch64-unknown-linux-musl/release/sstr target/aarch64-unknown-linux-musl/release/sstr-workspace dist/aarch64-unknown-linux-musl/
+cp target/aarch64-unknown-linux-musl/release/sstr target/aarch64-unknown-linux-musl/release/sstr-workspace target/aarch64-unknown-linux-musl/release/ytq dist/aarch64-unknown-linux-musl/
 '''
 
 [tasks.dist-armv7]
 dependencies = ["preflight"]
 script = '''
-cargo zigbuild --release --workspace --target armv7-unknown-linux-musleabihf
+cargo zigbuild --release --target armv7-unknown-linux-musleabihf
 mkdir -p dist/armv7-unknown-linux-musleabihf
-cp target/armv7-unknown-linux-musleabihf/release/sstr target/armv7-unknown-linux-musleabihf/release/sstr-workspace dist/armv7-unknown-linux-musleabihf/
+cp target/armv7-unknown-linux-musleabihf/release/sstr target/armv7-unknown-linux-musleabihf/release/sstr-workspace target/armv7-unknown-linux-musleabihf/release/ytq dist/armv7-unknown-linux-musleabihf/
 '''
 
 [tasks.dist-x86_64]
 dependencies = ["preflight"]
 script = '''
-cargo zigbuild --release --workspace --target x86_64-unknown-linux-musl
+cargo zigbuild --release --target x86_64-unknown-linux-musl
 mkdir -p dist/x86_64-unknown-linux-musl
-cp target/x86_64-unknown-linux-musl/release/sstr target/x86_64-unknown-linux-musl/release/sstr-workspace dist/x86_64-unknown-linux-musl/
+cp target/x86_64-unknown-linux-musl/release/sstr target/x86_64-unknown-linux-musl/release/sstr-workspace target/x86_64-unknown-linux-musl/release/ytq dist/x86_64-unknown-linux-musl/
 '''
 
 [tasks.dist]

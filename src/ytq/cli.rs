@@ -10,14 +10,14 @@ use std::path::PathBuf;
 use std::process::Command;
 use std::sync::Arc;
 
-use staticstream::json::{self, Value};
+use crate::format::json::{self, Value};
 
-use crate::live::{live_view, now};
-use crate::log::{log, say, Mode};
-use crate::queue::{self, status, text, title_or_url, RunLock};
-use crate::runner::{brave_ready, run_timeout, Ran, Runner, NAME};
-use crate::urls::{as_url, first_id, py_strip, short, youtube_urls};
-use crate::{settings, Paths, HISTORY, ORDER, PENDING};
+use crate::ytq::live::{live_view, now};
+use crate::ytq::log::{log, say, Mode};
+use crate::ytq::queue::{self, status, text, title_or_url, RunLock};
+use crate::ytq::runner::{brave_ready, run_timeout, Ran, Runner, NAME};
+use crate::ytq::urls::{as_url, first_id, py_strip, short, youtube_urls};
+use crate::ytq::{settings, Paths, HISTORY, ORDER, PENDING};
 
 /// The Python ytq's own header, which its help prints.
 const HEADER: &str = "SPDX-License-Identifier: MIT
@@ -294,9 +294,9 @@ fn help(ctx: &Ctx, cmd: &str) -> i32 {
     println!("media:  {} ({})", ctx.tilde(&media.to_string_lossy()), if media.is_file() { "found, read before the config" } else { "not there" });
     println!(
         "archive: OUTPUT={}  ARCHIVE_DIR={}  SSTR_KEY={}",
-        crate::runner::output_of(&ctx.s),
-        ctx.tilde(&crate::runner::archive_dir_of(&ctx.s)),
-        crate::runner::sstr_key_of(&ctx.s, &ctx.home).map(|k| ctx.tilde(&k.to_string_lossy())).unwrap_or_else(|| "(none: captures unsigned)".into())
+        crate::ytq::runner::output_of(&ctx.s),
+        ctx.tilde(&crate::ytq::runner::archive_dir_of(&ctx.s)),
+        crate::ytq::runner::sstr_key_of(&ctx.s, &ctx.home).map(|k| ctx.tilde(&k.to_string_lossy())).unwrap_or_else(|| "(none: captures unsigned)".into())
     );
     println!("  OUTPUT=sstr keeps a Static Stream capture and removes the MP4 once the capture verifies; both keeps both; mp4 keeps the MP4 alone");
     if matches!(cmd, "-h" | "--help" | "help") {
@@ -335,7 +335,7 @@ fn probe(ctx: &Ctx, args: &[String]) -> i32 {
         }
         Some("vtt") => {
             let Some(path) = args.get(1) else { return 2 };
-            match crate::textwrap::vtt_text(std::path::Path::new(path)) {
+            match crate::ytq::textwrap::vtt_text(std::path::Path::new(path)) {
                 Ok(t) => {
                     println!("{}", Value::str(t).to_python_json(None));
                     0
@@ -353,7 +353,7 @@ fn probe(ctx: &Ctx, args: &[String]) -> i32 {
                 return 2;
             };
             for t in texts {
-                println!("{}", Value::str(crate::textwrap::fill(t.as_str().unwrap_or(""), 78)).to_python_json(None));
+                println!("{}", Value::str(crate::ytq::textwrap::fill(t.as_str().unwrap_or(""), 78)).to_python_json(None));
             }
             0
         }
@@ -465,7 +465,7 @@ pub fn main(argv: &[String]) -> i32 {
         }
         "tui" => {
             let runner = Arc::new(Runner::new(ctx.paths.clone(), ctx.home.clone(), ctx.s.clone(), Mode::Quiet));
-            crate::window::main(runner)
+            crate::ytq::window::main(runner)
         }
         other => help(&ctx, other),
     }

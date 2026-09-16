@@ -1,28 +1,62 @@
-[workspace]
-resolver = "2"
-members = [
-    "crates/staticstream",
-    "crates/staticstream-tty",
-    "crates/staticstream-cli",
-    "crates/staticstream-ytq",
-    "crates/staticstream-workspace",
-]
-
-[workspace.package]
-version = "0.1.0"
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Paul Richeson
+[package]
+name = "staticstream"
+description = "Static Stream: a stream stopped in a file -- with its order, pace and tolerance for damage -- and let go again. The sstr command, the ytq download queue, and a terminal Workspace over both."
+version = "0.2.0"
 edition = "2021"
+rust-version = "1.70"
 license = "MIT"
 authors = ["Paul Richeson", "Claude"]
 repository = "https://github.com/vonglurt/staticstream"
-rust-version = "1.70"
+readme = "README.md"
+keywords = ["reed-solomon", "archive", "yt-dlp", "stream", "tui"]
+categories = ["command-line-utilities", "encoding", "multimedia", "filesystem"]
 
+# ONE CRATE, NAMED AFTER THE REPOSITORY, WITH NOTHING UNDERNEATH IT.
+#
+# This was five packages until the release -- staticstream, -tty, -cli, -ytq
+# and -workspace -- and they were never four dependencies plus a program. They
+# depended only on each other, shared one version and would have published
+# together, which is a module boundary wearing a package's clothes. copal-tm
+# was found in the same shape and collapsed for the same reason. So the format,
+# the armor, ytq and the Workspace are modules -- `format`, `tty`, `ytq`,
+# `workspace` -- and there is one name on crates.io, one version, one publish.
+#
 # NO EXTERNAL CRATES, AND THAT IS THE DESIGN -- orrery's and ascitty's rule.
 #
 # copal-build compiles the checkouts in ~/code on the machine itself, and a
 # fleet node is on a LAN that never reaches the internet, so a dependency is
-# a crate fetch that fails on the machines this is meant for. The crates here
-# depend only on each other. `make check` enforces it: Cargo.lock may name no
-# package with a `source`, and the release build runs --offline --locked.
+# a crate fetch that fails on the machines this is meant for. `make check`
+# enforces it: Cargo.lock may name no package with a `source`, and the release
+# build runs --offline --locked. This section is empty and stays empty.
+[dependencies]
+
+# yt-dlp IS NOT A DEPENDENCY OF THIS CRATE, and cannot be one: it is a Python
+# program, which ytq drives as a subprocess and which moves too often to
+# embed. `cargo install staticstream` therefore builds and installs with
+# nothing fetched at all. ytq's downloads need yt-dlp on PATH at RUN time, and
+# ffmpeg to merge and tag; sstr, the format and the Workspace need neither.
+# README.md says so under "What it needs at run time".
+
+[lib]
+name = "staticstream"
+path = "src/lib.rs"
+
+# Three binaries from one library, so a verb cannot mean two things: `ytq add`
+# and `sstr ytq add` are one `ytq::cli::main`, and every Service the Workspace
+# sends is a command line sstr accepts.
+[[bin]]
+name = "sstr"
+path = "src/bin/sstr.rs"
+
+[[bin]]
+name = "ytq"
+path = "src/bin/ytq.rs"
+
+[[bin]]
+name = "sstr-workspace"
+path = "src/bin/sstr-workspace.rs"
 
 [profile.release]
 opt-level = 3

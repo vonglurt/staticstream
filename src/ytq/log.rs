@@ -10,7 +10,7 @@ use std::fs::OpenOptions;
 use std::io::{IsTerminal, Write};
 use std::process::{Command, Stdio};
 
-use crate::{sys, Paths};
+use crate::ytq::{sys, Paths};
 
 pub const LOG_MAX: u64 = 4 * 1024 * 1024;
 

@@ -15,7 +15,7 @@ use std::sync::mpsc::{self, Receiver, RecvTimeoutError};
 use std::sync::Mutex;
 use std::time::Duration;
 
-use crate::sys;
+use crate::ytq::sys;
 
 /// `stty -g` from before raw mode: what [`restore`] puts back.
 static SAVED: Mutex<Option<String>> = Mutex::new(None);

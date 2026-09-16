@@ -19,8 +19,8 @@ use std::cell::RefCell;
 use std::io::{self, BufRead, Read};
 use std::rc::Rc;
 
-use staticstream::crc32;
-use staticstream::reader::Erasures;
+use crate::format::crc32;
+use crate::format::reader::Erasures;
 
 /// Payload bytes per line.
 pub const LINE_BYTES: usize = 45;

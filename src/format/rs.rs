@@ -20,7 +20,7 @@
 
 use std::sync::OnceLock;
 
-pub const NSYM: usize = crate::NSYM;
+pub const NSYM: usize = crate::format::NSYM;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RsError(pub &'static str);

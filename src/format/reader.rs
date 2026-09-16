@@ -18,10 +18,10 @@ use std::rc::Rc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 
-use crate::json::{self, Value};
-use crate::record::{self, Header};
-use crate::sha256::{hex, unhex, Sha256};
-use crate::{body_len, crc32, zlib, RecordType, FLAG_DEFLATE, HDR_COPY, HDR_DISK, MAGIC, SIGNING_NAMESPACE, SYNC, SYNC2};
+use crate::format::json::{self, Value};
+use crate::format::record::{self, Header};
+use crate::format::sha256::{hex, unhex, Sha256};
+use crate::format::{body_len, crc32, zlib, RecordType, FLAG_DEFLATE, HDR_COPY, HDR_DISK, MAGIC, SIGNING_NAMESPACE, SYNC, SYNC2};
 
 /// Byte ranges of the stream known to be lost, in the order they were found.
 #[derive(Default, Debug, Clone)]
