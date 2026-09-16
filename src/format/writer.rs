@@ -32,11 +32,27 @@ pub struct Options {
     pub deflate: bool,
     /// The SSH private key to sign with, or a public key held by ssh-agent.
     pub key: Option<PathBuf>,
+    /// The outer code, which is what the format version names.
+    ///
+    /// **Version 0 is the default and stays the default for now.** The 44
+    /// comparisons against `tools/copal-sstr.py` are comparisons at version 0,
+    /// and they are the reason anyone believes this format is what the
+    /// prototype writes. Making version 1 the default is its own decision,
+    /// with its own line in the report; it is not one to take in the step that
+    /// first writes a version 1 byte.
+    pub outer: record::Outer,
 }
 
 impl Default for Options {
     fn default() -> Self {
-        Options { group: GROUP, checkpoint_records: 64, checkpoint_secs: 10.0, deflate: false, key: None }
+        Options {
+            group: GROUP,
+            checkpoint_records: 64,
+            checkpoint_secs: 10.0,
+            deflate: false,
+            key: None,
+            outer: record::Outer::Xor,
+        }
     }
 }
 
@@ -70,7 +86,11 @@ impl<W: Write> Writer<W> {
     pub fn new(mut out: W, mut meta: Value, opts: Options) -> io::Result<Writer<W>> {
         let stream_id = random_id()?;
         meta.set("format", Value::str("sstr"));
-        meta.set("version", Value::num(0));
+        // THE VERSION IS THE OUTER CODE'S NAME. A reader that has the header
+        // knows which arithmetic a parity record holds before it meets one --
+        // though it does not need to, because the rows are countable from the
+        // entries.
+        meta.set("version", Value::num(if opts.outer == record::Outer::PQ { 1 } else { 0 }));
         meta.set("stream_id", Value::str(hex(&stream_id)));
         if let Some(k) = &opts.key {
             meta.set("key", Value::str(public_key(k)?));
@@ -158,7 +178,7 @@ impl<W: Write> Writer<W> {
         if self.group.is_empty() {
             return Ok(());
         }
-        let body = record::encode_parity(&self.group);
+        let body = record::encode_parity_with(&self.group, self.opts.outer);
         self.record(RecordType::Parity, &body, 0, None, 1, false)?;
         self.group.clear();
         Ok(())

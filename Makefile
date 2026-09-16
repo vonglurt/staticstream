@@ -63,6 +63,7 @@ check: deps ## what a commit must pass: no external crates, the tests, an offlin
 	$(CARGO) test --offline --locked --quiet
 	$(CARGO) build --release --offline --locked
 	@sh tests/crosscheck.sh
+	@SSTR='$(CURDIR)/target/release/sstr' sh tests/outer-check.sh
 	@YTQ='$(YTQ_BIN)' sh tests/ytq-crosscheck.sh
 	@YTQ='$(YTQ_BIN)' sh tests/ytq-runner-crosscheck.sh
 	@YTQ='$(YTQ_BIN)' sh tests/ytq-archive-check.sh
@@ -73,6 +74,13 @@ check: deps ## what a commit must pass: no external crates, the tests, an offlin
 crosscheck: ## the Rust sstr against tools/copal-sstr.py in ../copal: both directions, damage, armor
 	@$(CARGO) build --release --offline --locked --quiet
 	@VERBOSE=1 sh tests/crosscheck.sh
+
+## outer-check: version 1's outer code -- two records of a group lost, and
+## rebuilt, where version 0 loses them
+.PHONY: outer-check
+outer-check:
+	@$(CARGO) build --release --offline --locked --quiet
+	@VERBOSE=1 sh tests/outer-check.sh
 
 ytq-crosscheck: ## the Rust ytq against the Python ytq of tests/reference: urls, settings, queue, clipboard
 	@$(CARGO) build --release --offline --locked --quiet

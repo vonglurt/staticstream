@@ -33,6 +33,7 @@ const USAGE: &str = "\
 sstr -- Static Stream: record a stream into a file, and play it back as one
 
   sstr record OUT [--input FILE] [--type MIME] [--key KEY] [--deflate]
+                  [--format 0|1]
                   [--source URL] [--license TEXT] [--note TEXT]
                   [--chunk N] [--align N] [--flush-ms N] [--group N]
                   [--checkpoint-records N] [--checkpoint-secs S]
@@ -247,7 +248,7 @@ fn local_time() -> String {
 fn cmd_record(raw: &[String]) -> Result<i32, String> {
     let valued = [
         "--input", "--type", "--chunk", "--align", "--flush-ms", "--group", "--checkpoint-records",
-        "--checkpoint-secs", "--key", "--source", "--license", "--note",
+        "--checkpoint-secs", "--key", "--source", "--license", "--note", "--format",
     ];
     let a = Args::parse(raw, &valued)?;
     a.check_flags(&["--deflate"])?;
@@ -287,12 +288,21 @@ fn cmd_record(raw: &[String]) -> Result<i32, String> {
     } else {
         Box::new(File::create(&output).map_err(|e| format!("{output}: {e}"))?)
     };
+    // --format picks the outer code, and 0 is the default. Version 1 replaces
+    // the parity record's single XOR row with P and Q, which rebuilds two lost
+    // records of a group where version 0 rebuilds one; the prototype reads
+    // version 0 and only version 0, so that is what is written unless asked.
+    let version = a.num::<u64>("--format", 0)?;
+    if version > 1 {
+        return Err(format!("--format {version}: this build writes 0 or 1"));
+    }
     let opts = writer::Options {
         group,
         checkpoint_records: ckpt_records,
         checkpoint_secs: ckpt_secs,
         deflate: a.flag("--deflate"),
         key: a.get("--key").map(PathBuf::from),
+        outer: staticstream::format::record::Outer::of_version(version),
     };
     let mut w = Writer::new(out, meta, opts).map_err(|e| e.to_string())?;
     catch_stop();

@@ -409,33 +409,51 @@ impl<R: Read> Reader<R> {
         for e in &entries {
             self.lengths.insert(e.seq, e.plain_len);
         }
-        let missing: Vec<&Header> = entries.iter().filter(|e| !self.bodies.contains_key(&e.seq)).collect();
-        if missing.len() != 1 {
+        // THE ROWS ARE COUNTED, NOT LOOKED UP. Every entry carries its
+        // plain_len, so the padded width is the largest of them and the number
+        // of rows is what the blob has room for: one at version 0, two at
+        // version 1. A parity record therefore answers for itself, which
+        // matters because after a resync it can be the first record a reader
+        // meets -- before any header, and so before any version.
+        let n = entries.iter().map(|e| e.plain_len as usize).max().unwrap_or(0);
+        if n == 0 {
+            return;
+        }
+        let rows: Vec<&[u8]> = blob.chunks(n).collect();
+
+        // The group in its own order, which is the order Q's coefficients are
+        // in: the entry table is written in it and read back in it.
+        let have: Vec<Option<Vec<u8>>> =
+            entries.iter().map(|e| self.bodies.get(&e.seq).cloned()).collect();
+        let Some(fixed) = record::rebuild(&have, &rows, n) else {
+            // More holes than rows. The good bodies go, because nothing else
+            // will come for this group.
             for e in &entries {
                 self.bodies.remove(&e.seq);
             }
             return;
-        }
-        let lost = *missing[0];
-        let mut acc = blob.to_vec();
+        };
         for e in &entries {
-            if e.seq != lost.seq {
-                if let Some(b) = self.bodies.remove(&e.seq) {
-                    for (x, y) in acc.iter_mut().zip(&b) {
-                        *x ^= y;
-                    }
-                }
+            self.bodies.remove(&e.seq);
+        }
+        for (at, mut acc) in fixed {
+            let lost = entries[at];
+            acc.truncate(lost.plain_len as usize);
+            // THE CRC IS WHAT SAYS A REBUILD WAS RIGHT, not the arithmetic.
+            // A group with two holes and a third record quietly corrupt would
+            // solve to two wrong bodies, and this is where that stops.
+            if acc.len() != lost.plain_len as usize
+                || crc32::crc32(&acc) != lost.body_crc
+                || lost.seq < self.next_seq
+            {
+                continue;
             }
+            self.hashes.insert(lost.seq, record::record_hash(&lost, &acc));
+            self.pending.insert(lost.seq, (lost, Some(acc)));
+            self.s.recovered += 1;
+            self.max_seq = self.max_seq.max(lost.seq as i64);
+            self.log(format!("record {} rebuilt from parity", lost.seq));
         }
-        acc.truncate(lost.plain_len as usize);
-        if acc.len() != lost.plain_len as usize || crc32::crc32(&acc) != lost.body_crc || lost.seq < self.next_seq {
-            return;
-        }
-        self.hashes.insert(lost.seq, record::record_hash(&lost, &acc));
-        self.pending.insert(lost.seq, (lost, Some(acc)));
-        self.s.recovered += 1;
-        self.max_seq = self.max_seq.max(lost.seq as i64);
-        self.log(format!("record {} rebuilt from parity", lost.seq));
     }
 
     fn check(&mut self, plain: &[u8]) {

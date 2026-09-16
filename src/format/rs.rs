@@ -77,7 +77,14 @@ fn tables() -> &'static Tables {
     })
 }
 
-fn mul(a: u8, b: u8) -> u8 {
+/// GF(256) multiplication.
+///
+/// Public because the OUTER code needs the same field as the inner one. The
+/// parity record's Q row is a sum of `g^i * body_i` over this field
+/// (`format::record`), and a crate with two Galois fields in it is a crate
+/// with a bug waiting to be written: one set of tables, one primitive
+/// polynomial, one answer to what `g^3` means.
+pub fn mul(a: u8, b: u8) -> u8 {
     if a == 0 || b == 0 {
         return 0;
     }
@@ -96,12 +103,15 @@ fn div(a: u8, b: u8) -> Result<u8, RsError> {
     Ok(t.exp[(t.log[a as usize] as usize + 255 - t.log[b as usize] as usize) % 255])
 }
 
-/// 2^p for any integer p, which is all the decoder raises.
-fn alpha(p: i64) -> u8 {
+/// 2^p for any integer p, which is all the decoder raises -- and, at the
+/// outer code, the coefficient of the record in place p of its group.
+pub fn alpha(p: i64) -> u8 {
     tables().exp[p.rem_euclid(255) as usize]
 }
 
-fn inverse(a: u8) -> u8 {
+/// 1/a in GF(256). `a` must not be zero, which the outer code guarantees by
+/// only ever inverting a difference of two distinct powers of the generator.
+pub fn inverse(a: u8) -> u8 {
     let t = tables();
     t.exp[255 - t.log[a as usize] as usize]
 }

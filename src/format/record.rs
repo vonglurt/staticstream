@@ -267,9 +267,52 @@ const PAR_ENTRY: usize = 25; // seq u64, t_us u64, flags u8, plain_len u32, body
 
 /// A parity body: the count, each data record's header fields, and the XOR of
 /// their plain bodies, each padded to the longest.
+/// The outer code a parity record carries.
+///
+/// Version 0 is one row, the XOR, and rebuilds one lost record of a group.
+/// Version 1 is two, P and Q, and rebuilds two. P IS VERSION 0'S ROW,
+/// unchanged and first, which is why a version 1 parity record whose second
+/// row was lost still rebuilds one by the arithmetic that always did.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Outer {
+    /// The XOR of the group's bodies. Any one record.
+    Xor,
+    /// P and Q over GF(256). Any two.
+    PQ,
+}
+
+impl Outer {
+    /// How many rows of the padded width the blob holds.
+    pub fn rows(self) -> usize {
+        match self {
+            Outer::Xor => 1,
+            Outer::PQ => 2,
+        }
+    }
+
+    /// The outer code of a stream at this format version.
+    pub fn of_version(v: u64) -> Outer {
+        if v >= 1 {
+            Outer::PQ
+        } else {
+            Outer::Xor
+        }
+    }
+}
+
 pub fn encode_parity(group: &[(Header, Vec<u8>)]) -> Vec<u8> {
+    encode_parity_with(group, Outer::Xor)
+}
+
+/// A parity body: the group's entries, then the outer code's rows.
+///
+/// Q's coefficient for the record in place `i` is `g^i`, g being the field's
+/// generator -- so no two records of a group share a coefficient, and the
+/// difference of any two of them is non-zero, which is the whole of what the
+/// two-erasure solve needs to divide by.
+pub fn encode_parity_with(group: &[(Header, Vec<u8>)], outer: Outer) -> Vec<u8> {
     let n = group.iter().map(|(_, b)| b.len()).max().unwrap_or(0);
-    let mut out = Vec::with_capacity(2 + group.len() * PAR_ENTRY + n);
+    let mut out = Vec::with_capacity(2 + group.len() * PAR_ENTRY + n * outer.rows());
     out.extend_from_slice(&(group.len() as u16).to_le_bytes());
     for (h, _) in group {
         out.extend_from_slice(&h.seq.to_le_bytes());
@@ -278,17 +321,92 @@ pub fn encode_parity(group: &[(Header, Vec<u8>)]) -> Vec<u8> {
         out.extend_from_slice(&h.plain_len.to_le_bytes());
         out.extend_from_slice(&h.body_crc.to_le_bytes());
     }
-    let mut blob = vec![0u8; n];
+    let mut p = vec![0u8; n];
     for (_, b) in group {
-        for (x, y) in blob.iter_mut().zip(b) {
+        for (x, y) in p.iter_mut().zip(b) {
             *x ^= y;
         }
     }
-    out.extend_from_slice(&blob);
+    out.extend_from_slice(&p);
+    if outer == Outer::PQ {
+        let mut q = vec![0u8; n];
+        for (i, (_, b)) in group.iter().enumerate() {
+            let c = rs::alpha(i as i64);
+            for (x, y) in q.iter_mut().zip(b) {
+                *x ^= rs::mul(c, *y);
+            }
+        }
+        out.extend_from_slice(&q);
+    }
     out
 }
 
-/// A parity body back into the data records' headers and the XOR blob.
+/// The bodies of the records missing from a group, given the rows that
+/// survived and where the holes are.
+///
+/// `n` is the padded width, `have[i]` the body of the record in place `i` when
+/// it arrived and `None` when it did not, and `rows` the blob split into P
+/// (and Q, at version 1). The answers come back padded to `n`; the caller
+/// truncates each to its own `plain_len` and checks its CRC, because that --
+/// not this arithmetic -- is what says a rebuild was right.
+pub fn rebuild(have: &[Option<Vec<u8>>], rows: &[&[u8]], n: usize) -> Option<Vec<(usize, Vec<u8>)>> {
+    let lost: Vec<usize> = have.iter().enumerate().filter(|(_, b)| b.is_none()).map(|(i, _)| i).collect();
+    match lost.len() {
+        0 => Some(Vec::new()),
+        // One hole is the XOR, which is all version 0 ever needed and all
+        // version 1 needs here too: P alone answers it.
+        1 => {
+            let p = *rows.first()?;
+            let mut acc = p.to_vec();
+            acc.resize(n, 0);
+            for b in have.iter().flatten() {
+                for (x, y) in acc.iter_mut().zip(b) {
+                    *x ^= y;
+                }
+            }
+            Some(vec![(lost[0], acc)])
+        }
+        // Two needs Q as well, and the solve of the two equations.
+        2 => {
+            let (p, q) = (*rows.first()?, *rows.get(1)?);
+            let (a, b) = (lost[0], lost[1]);
+            let (ga, gb) = (rs::alpha(a as i64), rs::alpha(b as i64));
+            // Distinct places, so distinct powers, so a non-zero difference:
+            // g has order 255 and a group is at most 16 records.
+            let d = ga ^ gb;
+            if d == 0 {
+                return None;
+            }
+            let inv = rs::inverse(d);
+            let mut pp = p.to_vec();
+            let mut qq = q.to_vec();
+            pp.resize(n, 0);
+            qq.resize(n, 0);
+            for (i, body) in have.iter().enumerate() {
+                let Some(body) = body else { continue };
+                let c = rs::alpha(i as i64);
+                for (j, y) in body.iter().enumerate() {
+                    pp[j] ^= *y;
+                    qq[j] ^= rs::mul(c, *y);
+                }
+            }
+            let mut da = vec![0u8; n];
+            let mut db = vec![0u8; n];
+            for j in 0..n {
+                da[j] = rs::mul(qq[j] ^ rs::mul(gb, pp[j]), inv);
+                db[j] = pp[j] ^ da[j];
+            }
+            Some(vec![(a, da), (b, db)])
+        }
+        // Three is beyond two rows, and saying so is the honest answer.
+        _ => None,
+    }
+}
+
+
+/// A parity body back into the data records' headers and the outer code's
+/// rows, still joined: the caller splits them by the padded width, which is
+/// the largest `plain_len` among the entries.
 pub fn decode_parity(plain: &[u8]) -> Option<(Vec<Header>, &[u8])> {
     if plain.len() < 2 {
         return None;
@@ -401,5 +519,138 @@ mod tests {
         acc.truncate(hs[2].plain_len as usize);
         assert_eq!(acc, bodies[2]);
         assert_eq!(crc32::crc32(&acc), hs[2].body_crc);
+    }
+
+    /// A group of `n` bodies of assorted lengths, and the padded width.
+    fn a_group(n: usize) -> (Vec<Vec<u8>>, Vec<(Header, Vec<u8>)>, usize) {
+        let bodies: Vec<Vec<u8>> = (0..n).map(|i| noise(700 + i * 131, i as u64 + 3)).collect();
+        let group: Vec<(Header, Vec<u8>)> = bodies.iter().map(|b| (header(b), b.clone())).collect();
+        let width = bodies.iter().map(|b| b.len()).max().unwrap_or(0);
+        (bodies, group, width)
+    }
+
+    /// The rows of a parity blob, split by the padded width the entries give.
+    ///
+    /// THE ROW COUNT IS NOT A FIELD. Every entry carries its plain_len, so the
+    /// width is the largest of them and the number of rows is what is left
+    /// over -- which is how a parity record says how many it has without being
+    /// told the stream's version, and a parity record can be the first thing a
+    /// reader sees after a resync.
+    fn rows_of<'a>(blob: &'a [u8], hs: &[Header]) -> Vec<&'a [u8]> {
+        let n = hs.iter().map(|h| h.plain_len as usize).max().unwrap_or(0);
+        if n == 0 {
+            return Vec::new();
+        }
+        blob.chunks(n).collect()
+    }
+
+    #[test]
+    fn version_1_keeps_version_0s_row_and_adds_one() {
+        let (_, group, n) = a_group(9);
+        let v0 = encode_parity_with(&group, Outer::Xor);
+        let v1 = encode_parity_with(&group, Outer::PQ);
+        let (hs0, blob0) = decode_parity(&v0).unwrap();
+        let (hs1, blob1) = decode_parity(&v1).unwrap();
+        assert_eq!(hs0.len(), hs1.len(), "the entry table is the same table");
+        assert_eq!(blob1.len(), blob0.len() + n, "one more row, of the padded width");
+        // P IS VERSION 0'S ROW. Not "computed the same way" -- the same bytes.
+        assert_eq!(&blob1[..n], blob0, "P is the XOR, unchanged");
+        assert_eq!(rows_of(blob0, &hs0).len(), 1);
+        assert_eq!(rows_of(blob1, &hs1).len(), 2);
+    }
+
+    #[test]
+    fn one_hole_is_rebuilt_at_either_version() {
+        let (bodies, group, n) = a_group(7);
+        for outer in [Outer::Xor, Outer::PQ] {
+            let par = encode_parity_with(&group, outer);
+            let (hs, blob) = decode_parity(&par).unwrap();
+            let rows = rows_of(blob, &hs);
+            for lost in 0..bodies.len() {
+                let have: Vec<Option<Vec<u8>>> = bodies
+                    .iter()
+                    .enumerate()
+                    .map(|(i, b)| if i == lost { None } else { Some(b.clone()) })
+                    .collect();
+                let got = rebuild(&have, &rows, n).expect("one hole is always answerable");
+                assert_eq!(got.len(), 1);
+                let (at, mut body) = got.into_iter().next().unwrap();
+                assert_eq!(at, lost);
+                body.truncate(hs[lost].plain_len as usize);
+                assert_eq!(body, bodies[lost], "{outer:?}, record {lost}");
+                assert_eq!(crc32::crc32(&body), hs[lost].body_crc);
+            }
+        }
+    }
+
+    /// THE DONE-CONDITION OF THE PHASE, in the small: two records of a group
+    /// lost, and both come back. Every pair of places in a full group of 16,
+    /// because a solve that works for one pair and not another is the kind of
+    /// arithmetic mistake that hides behind a single example.
+    #[test]
+    fn version_1_rebuilds_two_lost_records_of_a_group() {
+        let (bodies, group, n) = a_group(crate::format::GROUP);
+        let par = encode_parity_with(&group, Outer::PQ);
+        let (hs, blob) = decode_parity(&par).unwrap();
+        let rows = rows_of(blob, &hs);
+        assert_eq!(rows.len(), 2);
+        let mut pairs = 0;
+        for a in 0..bodies.len() {
+            for b in (a + 1)..bodies.len() {
+                let have: Vec<Option<Vec<u8>>> = bodies
+                    .iter()
+                    .enumerate()
+                    .map(|(i, x)| if i == a || i == b { None } else { Some(x.clone()) })
+                    .collect();
+                let got = rebuild(&have, &rows, n).expect("two holes, two rows");
+                assert_eq!(got.len(), 2);
+                for (at, mut body) in got {
+                    body.truncate(hs[at].plain_len as usize);
+                    assert_eq!(body, bodies[at], "pair ({a}, {b}), record {at}");
+                    assert_eq!(crc32::crc32(&body), hs[at].body_crc);
+                }
+                pairs += 1;
+            }
+        }
+        assert_eq!(pairs, crate::format::GROUP * (crate::format::GROUP - 1) / 2, "every pair was tried");
+    }
+
+    /// And version 0 cannot, which is the other half of the result: a battery
+    /// that only ever passes is measuring the battery.
+    #[test]
+    fn version_0_cannot_rebuild_two() {
+        let (bodies, group, n) = a_group(crate::format::GROUP);
+        let par = encode_parity_with(&group, Outer::Xor);
+        let (hs, blob) = decode_parity(&par).unwrap();
+        let rows = rows_of(blob, &hs);
+        assert_eq!(rows.len(), 1, "one row is all version 0 has");
+        let have: Vec<Option<Vec<u8>>> = bodies
+            .iter()
+            .enumerate()
+            .map(|(i, x)| if i == 3 || i == 11 { None } else { Some(x.clone()) })
+            .collect();
+        assert!(rebuild(&have, &rows, n).is_none(), "two holes and one row is not solvable");
+    }
+
+    #[test]
+    fn three_holes_are_beyond_two_rows() {
+        let (bodies, group, n) = a_group(crate::format::GROUP);
+        let par = encode_parity_with(&group, Outer::PQ);
+        let (hs, blob) = decode_parity(&par).unwrap();
+        let rows = rows_of(blob, &hs);
+        let have: Vec<Option<Vec<u8>>> = bodies
+            .iter()
+            .enumerate()
+            .map(|(i, x)| if i < 3 { None } else { Some(x.clone()) })
+            .collect();
+        assert!(rebuild(&have, &rows, n).is_none(), "and it says so rather than guessing");
+    }
+
+    #[test]
+    fn a_stream_version_picks_its_outer_code() {
+        assert_eq!(Outer::of_version(0), Outer::Xor);
+        assert_eq!(Outer::of_version(1), Outer::PQ);
+        assert_eq!(Outer::Xor.rows(), 1);
+        assert_eq!(Outer::PQ.rows(), 2);
     }
 }
