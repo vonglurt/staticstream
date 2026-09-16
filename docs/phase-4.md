@@ -88,7 +88,7 @@ because a parity record can be the first thing a reader sees after a resync.
 | Step | Delivers | Done when |
 |---|---|---|
 | **4a** | **version 1's outer code**: P+Q written and read, version 0 still written and read | a group with two records missing rebuilds both; the same capture at version 0 rebuilds neither; every phase-1 comparison still agrees. **Done**: `make outer-check`, 7 of 7 -- on one 200,000-byte capture with records 2 and 4 wiped, version 0 exits 1 with *2 data records lost* and version 1 exits 0 with *2 records rebuilt from parity* and a byte-identical payload. `make check` is 363 |
-| 4b | **the damage battery at version 1**: the Static Stream report's thirteen kinds of damage, re-run against version 1, and the redundancy figure remeasured | the battery passes at version 1 and the overhead is the measured number, not the designed one |
+| **4b** | **the damage battery at version 1**: the Static Stream report's thirteen kinds of damage, re-run against version 1, and the redundancy figure remeasured | the battery passes at version 1 and the overhead is the measured number, not the designed one. **Done**: `make outer-check`, 23 of 23. Version 1 recovers two payloads version 0 loses and loses none that version 0 keeps; the second row measures 1.0643 of version 0 against a designed 1.0588. `make check` is 379 |
 | 4c | **`make dist`**: what this machine can build, and an exact account of what it cannot | `dist/` holds the native target's three binaries and a manifest; a missing target or linker is named, with the command that supplies it, rather than a backtrace from inside cargo |
 | 4d | **the report, revised for phase 4** | V-E, V-F and the phase table say what was built and what was measured |
 
@@ -125,6 +125,52 @@ because a parity record can be the first thing a reader sees after a resync.
   payload chunked at 4 KiB, 268,275 against 286,163. The designed figure is
   (1 + 32/223) x (1 + 2/16) = 1.286 against version 0's 1.215; the measured
   one is step 4b's business, along with the rest of the battery.
+
+### Step 4b
+
+- **Version 0 is the anchor, and version 0 is anchored to the Python.** There
+  is no Python to compare a version 1 capture against, so what the battery
+  compares is version 1 against version 0 on the same damage. That is not
+  self-consistency: version 0 is held to `tools/copal-sstr.py` by the 44
+  comparisons, so the chain is Python ↔ version 0 ↔ version 1. It is the same
+  shape as 3e's four ways, with the prototype at the far end of it.
+- **THE MEASURE IS THE RECOVERED PAYLOAD, NOT THE `lost` COUNTER**, and that
+  is a finding rather than a convenience. On the 200 KiB burst version 0
+  reports *1 data records lost, 40 of unknown type* and version 1 reports *14
+  lost, 26 unknown*. That reads as a regression and is the opposite of one:
+  `lost` means *known to be missing*, and a record is known to be missing
+  because a surviving parity record's entry table names it. Version 1 could
+  **name** thirteen more of them. Both recovered the same 248,448 bytes and
+  neither matched. A check asserting on `lost` would have failed the better
+  program, and it was written that way first.
+- **Version 1 wins twice, not once.** `two wiped, same group` is the phase's
+  own done-condition; `4 KiB burst mid-body` was not expected and is the same
+  cause -- a burst that happens to fall across two records of one group. The
+  check requires **at least two** such kinds and requires one of them to be
+  the wipe, because a battery in which the two versions always agree is a
+  battery whose damage no longer reaches the outer code, and it would pass in
+  silence.
+- **The designed overhead assumes a full group, and a first measurement did
+  not have one.** (1 + 32/223) × (1 + 1/16) = 1.2150 and × (1 + 2/16) =
+  1.2864, a ratio of 1.0588. On 400,000 bytes at 64 KiB chunks the measured
+  ratio was **1.1392** -- not an error in the arithmetic but a group of six
+  records paying for sixteen, because the parity blob is one padded body per
+  row however few bodies there are. Measured where groups are full, on 4 MiB:
+
+  | chunk | records | version 0 | version 1 | ratio |
+  |---|---|---|---|---|
+  | 4 KiB | 1,108 | 1.3123 | 1.3847 | 1.0552 |
+  | 16 KiB | 280 | 1.2439 | 1.3198 | 1.0610 |
+  | 64 KiB | 73 | 1.2394 | 1.3287 | 1.0721 |
+
+  The ratio brackets the designed 1.0588. The overhead over the payload sits
+  above the designed 1.2150 and 1.2864 by the 136-byte record headers and the
+  small H, C and E records, which the design figure excludes and which cost
+  proportionally more at a small chunk.
+- **A capture smaller than one group pays the whole outer code.** That is
+  worth saying in the format's own report: the second row doubles the parity
+  blob, and on a stream of four records that is four records' worth of
+  padding, not a sixteenth.
 
 ## Decisions already made
 

@@ -122,6 +122,114 @@ for v in 0 1; do
     fi
 done
 
+# ---- B: the whole battery, at both versions (step 4b) ----------------------
+# THE ANCHOR IS VERSION 0, AND VERSION 0 IS ANCHORED TO THE PYTHON. There is no
+# Python to compare a version 1 capture against -- V-F of the project report
+# says the prototype stays at version 0 -- so what this compares is version 1
+# against version 0 on the same damage. That is not self-consistency: version 0
+# is held to `tools/copal-sstr.py` by the 44 comparisons in crosscheck.sh, so
+# the chain is Python <-> version 0 <-> version 1.
+#
+# THE MEASURE IS THE RECOVERED PAYLOAD, NOT THE `lost` COUNTER, and that is a
+# finding rather than a convenience. On a 200 KiB burst version 0 reports "1
+# data records lost, 40 of unknown type" and version 1 reports "14 lost, 26
+# unknown" -- which reads as a regression and is the opposite of one. `lost`
+# means "known to be missing", and a record is known to be missing because a
+# surviving parity record's entry table names it. Version 1 could NAME
+# thirteen more of them. Both recovered the same 248,448 bytes and neither
+# matched. A check asserting on `lost` would have failed the better program.
+BW=$(mktemp -d "${TMPDIR:-/tmp}/sstr-battery.XXXXXX")
+trap 'rm -rf "$W" "$BW"' EXIT INT TERM
+head -c 400000 /dev/urandom > "$BW/payload.bin"
+for v in 0 1; do
+    "$SSTR" record "$BW/cap.$v.sstr" --input "$BW/payload.bin" \
+        --type application/octet-stream --chunk "$CHUNK" --format "$v" >/dev/null 2>&1 || true
+done
+bsize=$(wc -c < "$BW/cap.0.sstr" 2>/dev/null || echo 0)
+
+# recovers VERSION FILE MODE ARGS...: yes when the payload comes back whole.
+recovers() {
+    _v=$1; shift
+    python3 "$ROOT/tests/damage.py" "$PROTO" "$1" "$BW/cap.$_v.sstr" "$BW/hurt.bin" $2 >/dev/null 2>&1 || { echo damage-failed; return; }
+    "$SSTR" play "$BW/hurt.bin" -o "$BW/played.bin" >/dev/null 2>&1
+    if cmp -s "$BW/payload.bin" "$BW/played.bin"; then echo yes; else echo no; fi
+}
+
+better=0
+sameg=no
+while IFS='|' read -r label mode margs; do
+    [ -n "$label" ] || continue
+    margs=$(printf '%s' "$margs" | sed "s/SIZE2/$((bsize / 2))/")
+    r0=$(recovers 0 "$mode" "$margs")
+    r1=$(recovers 1 "$mode" "$margs")
+    case "$r0/$r1" in
+        damage-failed/*|*/damage-failed) bad "B $label: damage.py failed" ;;
+        # Version 1 must never be the one that loses a payload version 0 kept.
+        yes/no) bad "B $label: version 0 recovered the payload and version 1 did not" ;;
+        no/yes)
+            better=$((better + 1))
+            [ "$mode" = wipe ] && [ "$margs" = "2 4" ] && sameg=yes
+            ok "B $label: version 1 recovers it, version 0 does not"
+            ;;
+        *) ok "B $label: both $r0" ;;
+    esac
+done <<EOF
+bit errors 1e-5|ber|0.00001
+bit errors 1e-4|ber|0.0001
+bit errors 1e-3|ber|0.001
+bit errors 1e-2|ber|0.01
+4 KiB burst early|burst|200000 4096
+4 KiB burst mid-body|burst|SIZE2 4096
+200 KiB burst|burst|300000 204800
+one record wiped|wipe|5
+two wiped, different groups|wipe|2 20
+two wiped, same group|wipe|2 4
+stream header wiped|wipehead|
+truncated at 60 %|truncate|0.6
+tampered record|tamper|3
+EOF
+
+# AND VERSION 1 MUST WIN SOMEWHERE. A battery in which the two versions always
+# agree is a battery whose damage no longer reaches the outer code, and it
+# would pass in silence.
+if [ "$better" -ge 2 ]; then
+    ok "B version 1 recovers $better payloads version 0 loses"
+else
+    bad "B version 1 was better on $better kinds of damage, expected at least 2 -- the battery has stopped reaching the outer code"
+fi
+if [ "$sameg" = yes ]; then
+    ok "B and one of them is two records of one group, which is the phase's own done-condition"
+else
+    bad "B 'two wiped, same group' did not separate the versions"
+fi
+
+# ---- C: what the second row costs (step 4b) --------------------------------
+# THE DESIGNED FIGURE ASSUMES A FULL GROUP. (1 + 32/223) x (1 + 1/16) = 1.2150
+# for version 0 and x (1 + 2/16) = 1.2864 for version 1, a ratio of 1.0588 --
+# but the parity blob is one padded body per row, so a capture with four
+# records in its group pays the whole outer code on four records. Measured on
+# 400,000 bytes at 64 KiB chunks the ratio came out 1.1392, and that is not a
+# fault in the arithmetic: the group was six records, not sixteen. So this
+# measures where groups are full.
+head -c 2097152 /dev/urandom > "$BW/big.bin"
+for v in 0 1; do
+    "$SSTR" record "$BW/big.$v.sstr" --input "$BW/big.bin" \
+        --type application/octet-stream --chunk 16384 --format "$v" >/dev/null 2>&1 || true
+done
+if [ -f "$BW/big.0.sstr" ] && [ -f "$BW/big.1.sstr" ]; then
+    b0=$(wc -c < "$BW/big.0.sstr")
+    b1=$(wc -c < "$BW/big.1.sstr")
+    ratio=$(awk -v a="$b0" -v b="$b1" 'BEGIN{printf "%.4f", b/a}')
+    over0=$(awk -v a="$b0" 'BEGIN{printf "%.4f", a/2097152}')
+    over1=$(awk -v b="$b1" 'BEGIN{printf "%.4f", b/2097152}')
+    inband=$(awk -v r="$ratio" 'BEGIN{print (r > 1.03 && r < 1.10) ? "yes" : "no"}')
+    if [ "$inband" = yes ]; then
+        ok "C the second row costs $ratio of version 0 (designed 1.0588); overhead $over0 -> $over1 of the payload"
+    else
+        bad "C the second row costs $ratio of version 0, which is not near the designed 1.0588 ($b0 -> $b1)"
+    fi
+fi
+
 if [ "$FAILED" -eq 0 ]; then
     printf '  ok      outer-check: %s checks pass\n' "$PASSED"
     exit 0
