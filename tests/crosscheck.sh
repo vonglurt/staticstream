@@ -85,7 +85,12 @@ for kind in $INPUTS; do
         if [ $w = py ]; then
             $PY record "$W/$kind.$w.sstr" --input "$W/$kind.bin" $(writer_args $kind)
         else
-            "$SSTR" record "$W/$kind.$w.sstr" --input "$W/$kind.bin" $(writer_args $kind)
+            # --format 0 ON PURPOSE. The Rust writes version 1 by default now,
+            # and tools/copal-sstr.py reads version 0 and only version 0 -- so
+            # these 44 comparisons are comparisons AT VERSION 0, which is
+            # exactly what makes them the chain back to the specification.
+            # Version 1 is checked by tests/outer-check.sh, against version 0.
+            "$SSTR" record "$W/$kind.$w.sstr" --input "$W/$kind.bin" --format 0 $(writer_args $kind)
         fi
         compare "$kind, written by $w" "$W/$kind.$w.sstr"
         cmp -s "$W/rs.out" "$W/$kind.bin" && ok "$kind, written by $w: payload is the original" \

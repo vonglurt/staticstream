@@ -230,6 +230,52 @@ if [ -f "$BW/big.0.sstr" ] && [ -f "$BW/big.1.sstr" ]; then
     fi
 fi
 
+# ---- D: a version 0 reader, given a version 1 capture -----------------------
+# VERSION 1 IS BACKWARD COMPATIBLE, and that was not the plan -- it is what P
+# being version 0's row, first, turns out to buy. A version 0 reader takes the
+# first padded width of the blob as the XOR and truncates each rebuilt body to
+# its own length, so the Q row sitting behind it is bytes that reader never
+# reaches. tools/copal-sstr.py therefore plays a version 1 capture, and still
+# rebuilds ONE lost record of a group from it. It fails only at two, which is
+# precisely what version 1 added.
+#
+# This is checked here because it is the kind of property that is true by
+# accident until someone reorders two rows, and then quietly is not.
+head -c 200000 /dev/urandom > "$W/compat.bin"
+if "$SSTR" record "$W/compat.sstr" --input "$W/compat.bin" \
+    --type application/octet-stream --chunk "$CHUNK" --format 1 >/dev/null 2>&1; then
+
+    python3 "$PROTO" play "$W/compat.sstr" -o "$W/proto.out" >/dev/null 2>&1
+    if cmp -s "$W/compat.bin" "$W/proto.out"; then
+        ok "D the prototype plays a version 1 capture"
+    else
+        bad "D the prototype could not play an undamaged version 1 capture"
+    fi
+
+    if python3 "$ROOT/tests/damage.py" "$PROTO" wipe "$W/compat.sstr" "$W/compat1.sstr" 5 >/dev/null 2>&1; then
+        python3 "$PROTO" play "$W/compat1.sstr" -o "$W/proto1.out" >/dev/null 2>&1
+        if cmp -s "$W/compat.bin" "$W/proto1.out"; then
+            ok "D and rebuilds one lost record from it, because P is its own row"
+        else
+            bad "D the prototype could not rebuild one lost record of a version 1 capture"
+        fi
+    fi
+
+    # AND IT STOPS AT TWO. If this ever succeeds, P and Q are not what this
+    # check thinks they are.
+    if python3 "$ROOT/tests/damage.py" "$PROTO" wipe "$W/compat.sstr" "$W/compat2.sstr" 2 4 >/dev/null 2>&1; then
+        python3 "$PROTO" play "$W/compat2.sstr" -o "$W/proto2.out" >/dev/null 2>&1
+        "$SSTR" play "$W/compat2.sstr" -o "$W/rs2.out" >/dev/null 2>&1
+        p_same=no; cmp -s "$W/compat.bin" "$W/proto2.out" && p_same=yes
+        r_same=no; cmp -s "$W/compat.bin" "$W/rs2.out" && r_same=yes
+        if [ "$p_same" = no ] && [ "$r_same" = yes ]; then
+            ok "D and stops at two, where version 1's own reader does not"
+        else
+            bad "D two lost: prototype recovered=$p_same, version 1 reader recovered=$r_same"
+        fi
+    fi
+fi
+
 if [ "$FAILED" -eq 0 ]; then
     printf '  ok      outer-check: %s checks pass\n' "$PASSED"
     exit 0

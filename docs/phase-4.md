@@ -30,8 +30,8 @@ the cross tooling is absent, which is the state this machine is in.
 **The other half has no Python to compare against, for a new reason.** Phases
 1 and 2 were checked against `tools/copal-sstr.py`. Version 1 changes the
 format, and V-F says the prototype stays at version 0 — so the Python cannot
-read a version 1 capture, by design. The bar that replaces the crosscheck
-here is not a second implementation but an **experiment**:
+be *held to* a version 1 capture. The bar that replaces the crosscheck here is
+not a second implementation but an **experiment**:
 
 > Damage a capture in a way that loses two records of one group. Version 0
 > loses them. Version 1 plays back byte-identical.
@@ -245,16 +245,42 @@ because a parity record can be the first thing a reader sees after a resync.
   file is worse than no excerpt: it reads as though it had been checked.
 - **What phase 4 has NOT done is in the report, not only in this file.** The
   row's done-condition is *binaries run on the Pi 2B and the x86_64 VM*, and
-  Section IX-C says plainly that it is unmet, why, and what remains to settle
+  Section IX-D says plainly that it is unmet, why, and what remained to settle
   before those runs happen -- `+crt-static` for a binary meant to travel.
+
+### After the steps: version 1 becomes the default
+
+- **`sstr record` writes version 1, and `FORMAT_VERSION` is 1.** A capture is
+  worth more when two lost records of a group come back than when one does,
+  and that is the whole of what the second row buys, at about 6 % of the file.
+  `ytq` archives through `writer::Options::default()`, so its captures follow.
+- **AND IT TURNS OUT VERSION 1 IS BACKWARD COMPATIBLE**, which was not the
+  plan and is not something this phase designed. It falls out of P being
+  version 0's row, first: a version 0 reader takes the first padded width of
+  the blob as the XOR and truncates each rebuilt body to its own length, so
+  the Q row behind it is bytes that reader never reaches.
+  `tools/copal-sstr.py` therefore **plays a version 1 capture, and still
+  rebuilds one lost record of a group from it**, and fails only at two —
+  which is exactly what version 1 added. Section D of `outer-check` holds it
+  to that, because it is the kind of property that stays true by accident
+  until someone reorders two rows.
+- **This corrects something said earlier in this file and in the report.**
+  Both said the prototype could not read a version 1 capture. It can; what it
+  cannot do is *write* one or use the second row. The claim was inferred from
+  V-F's "the prototype stays version 0" and never tested until the default
+  changed and it was tested by accident.
+- **The crosscheck still records at version 0**, deliberately and with a
+  comment saying so. Those 44 comparisons are the chain back to the
+  specification and they are comparisons *at version 0*; leaving them to
+  follow the default would have quietly turned them into something else.
 
 ## Decisions already made
 
-- **Version 0 stays the default until the end of the phase.** `sstr record`
-  writes version 0 unless asked for version 1, and the crosschecks pin it
-  explicitly so that they go on meaning what they meant. Making version 1 the
-  default is its own decision, with its own line in the report, and it is not
-  one to take in the same step that first writes a version 1 byte.
+- **Version 0 stayed the default until the end of the phase, and then did
+  not.** Through 4a–4d `sstr record` wrote version 0 unless asked; version 1
+  became the default afterwards, on its own decision, which is what that
+  sequencing was for. `tests/crosscheck.sh` pins `--format 0` explicitly so
+  its 44 comparisons go on meaning what they meant.
 - **The reader takes both, always.** A version is a thing files have, not a
   thing programs have; a reader that dropped version 0 would strand every
   capture made before today, which is the opposite of what an archival format

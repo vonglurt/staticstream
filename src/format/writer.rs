@@ -34,12 +34,17 @@ pub struct Options {
     pub key: Option<PathBuf>,
     /// The outer code, which is what the format version names.
     ///
-    /// **Version 0 is the default and stays the default for now.** The 44
-    /// comparisons against `tools/copal-sstr.py` are comparisons at version 0,
-    /// and they are the reason anyone believes this format is what the
-    /// prototype writes. Making version 1 the default is its own decision,
-    /// with its own line in the report; it is not one to take in the step that
-    /// first writes a version 1 byte.
+    /// **Version 1 is the default.** A capture is worth more when two lost
+    /// records of a group come back than when one does, and that is the whole
+    /// of what the second parity row buys, at about 6 % of the file.
+    ///
+    /// What it costs: `tools/copal-sstr.py` reads version 0 and only version
+    /// 0, so a capture written from here can no longer be read by the
+    /// prototype. That is why `tests/crosscheck.sh` records with `--format 0`
+    /// -- the 44 comparisons are comparisons at version 0 and go on being so,
+    /// which keeps the chain back to the specification unbroken. Readers take
+    /// both versions and always will: a version is a thing files have, and
+    /// every capture written before today is still a capture.
     pub outer: record::Outer,
 }
 
@@ -51,7 +56,7 @@ impl Default for Options {
             checkpoint_secs: 10.0,
             deflate: false,
             key: None,
-            outer: record::Outer::Xor,
+            outer: record::Outer::PQ,
         }
     }
 }

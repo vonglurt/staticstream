@@ -288,11 +288,12 @@ fn cmd_record(raw: &[String]) -> Result<i32, String> {
     } else {
         Box::new(File::create(&output).map_err(|e| format!("{output}: {e}"))?)
     };
-    // --format picks the outer code, and 0 is the default. Version 1 replaces
-    // the parity record's single XOR row with P and Q, which rebuilds two lost
-    // records of a group where version 0 rebuilds one; the prototype reads
-    // version 0 and only version 0, so that is what is written unless asked.
-    let version = a.num::<u64>("--format", 0)?;
+    // --format picks the outer code, and 1 is the default: the parity record
+    // carries P and Q rather than one XOR row, so two lost records of a group
+    // come back where version 0 brings back one. `--format 0` is for writing
+    // something tools/copal-sstr.py can read, which is what the crosscheck
+    // does; version 0 is read here either way.
+    let version = a.num::<u64>("--format", 1)?;
     if version > 1 {
         return Err(format!("--format {version}: this build writes 0 or 1"));
     }

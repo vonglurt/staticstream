@@ -28,7 +28,7 @@ pub mod writer;
 pub mod zlib;
 
 /// The format version this crate reads and writes.
-pub const FORMAT_VERSION: u32 = 0;
+pub const FORMAT_VERSION: u32 = 1;
 
 /// The file signature, after PNG's: a high-bit byte, CR LF, ^Z, LF.
 pub const MAGIC: [u8; 8] = *b"\x89SST\r\n\x1a\n";
