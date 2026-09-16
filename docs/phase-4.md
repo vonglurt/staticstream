@@ -205,6 +205,25 @@ because a parity record can be the first thing a reader sees after a resync.
 - **`make dist` is gated on `make check`**, as `package` and `publish` are:
   these are the artifacts that leave the machine. `sh tools/dist.sh` is the
   ungated way, for working on the script itself.
+- **The dist binaries are static, and it is checked rather than claimed.**
+  Every target in V-E is musl. Rust's `*-unknown-linux-musl` targets link
+  statically already; Alpine patches its **own** triple to link musl
+  dynamically, so the binary this machine builds by default wants
+  `/lib/ld-musl-aarch64.so.1` at the other end -- right for a machine inside
+  Copal and wrong for the one thing a dist is for. `-C
+  target-feature=+crt-static` costs about 130 KB a binary, which is musl, and
+  `dist.sh` then reads each binary back: a dynamically linked ELF names its
+  interpreter inside itself and a static one has no interpreter to name, so
+  `grep -a ld-musl` settles it with no `file` and no `ldd`. The manifest
+  carries the answer per binary, and a musl target that came out dynamic gets
+  a warning rather than silence. **`make build` and what `copal-build`
+  installs are untouched**: inside Copal, Alpine's default is the right one.
+- **`dist.sh` builds into `target/dist-build`, not `target`.** The flag above
+  is not the one `make check` uses, and cargo fingerprints RUSTFLAGS -- so one
+  shared directory means a full rebuild every time anyone alternates, and, far
+  worse, leaves `target/release` holding binaries built with flags the check
+  never asked for. Both happened while the script was being written, which is
+  how they came to be found.
 - **What could not be checked here, stated plainly.** There is no rustup, no
   cargo-make and no cargo-zigbuild on this guest; `zig` is packaged and
   installed. Alpine does package `rustup` (1.29.0) — `make tools` said

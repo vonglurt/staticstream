@@ -22,14 +22,39 @@
 # with rustc's own host triple, and the cross set is V-E's list less whichever
 # of them this machine turns out to be.
 
+# EVERY TARGET HERE IS musl, AND A RELEASE BINARY IS STATIC. Rust's
+# *-unknown-linux-musl targets link statically already; Alpine's rust patches
+# its OWN triple to link musl dynamically, so the binary this machine builds
+# by default needs /lib/ld-musl-*.so.1 at the other end. That is right for a
+# machine inside Copal and wrong for a binary handed to one that is not, which
+# is the whole point of a dist. It costs about 130 KB a binary -- musl itself
+# -- and it is not applied to `make build` or to what copal-build installs,
+# where Alpine's default is the right one.
 set -u
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 CARGO=${CARGO:-cargo}
+RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static"
+export RUSTFLAGS
+# ITS OWN TARGET DIRECTORY, because the flag above is not the one `make build`
+# and `make check` use. Sharing one directory has cargo rebuild the whole
+# crate every time anybody alternates between them -- and, worse, leaves
+# target/release holding a binary built with flags the check did not ask for.
+# Both happened while this script was being written.
+TDIR=${CARGO_TARGET_DIR:-$ROOT/target/dist-build}
+CARGO_TARGET_DIR=$TDIR
+export CARGO_TARGET_DIR
 DIST=${DIST:-$ROOT/dist}
 BINS="sstr ytq sstr-workspace"
 
 RED=''; OFF=''
 if [ -t 1 ]; then RED=$(printf '\033[31m'); OFF=$(printf '\033[0m'); fi
+
+# Static or not, checked rather than claimed, and with nothing but grep: a
+# dynamically linked ELF names its interpreter inside itself and a static one
+# has no interpreter to name. `file` agrees, where there is a `file`.
+linkage() {
+    if grep -qa 'ld-musl' "$1" 2>/dev/null; then echo dynamic; else echo static; fi
+}
 
 host=$($CARGO --version >/dev/null 2>&1 && rustc -vV | sed -n 's/^host: //p')
 [ -n "$host" ] || { printf '%serror:%s no rustc -- nothing can be built\n' "$RED" "$OFF"; exit 1; }
@@ -58,15 +83,17 @@ if $CARGO build --release --locked >/dev/null 2>&1; then
     mkdir -p "$DIST/$host"
     ok=yes
     for b in $BINS; do
-        if [ -f "$ROOT/target/release/$b" ]; then
-            cp "$ROOT/target/release/$b" "$DIST/$host/$b"
+        if [ -f "$TDIR/release/$b" ]; then
+            cp "$TDIR/release/$b" "$DIST/$host/$b"
         else
             ok=no
         fi
     done
     if [ "$ok" = yes ]; then
         built="$built $host"
-        printf '  ok      %s: %s\n' "$host" "$BINS"
+        printf '  ok      %s: %s (%s)\n' "$host" "$BINS" "$(linkage "$DIST/$host/sstr")"
+        [ "$(linkage "$DIST/$host/sstr")" = static ] || \
+            printf '  %swarning:%s %s came out dynamically linked -- it will want its loader wherever it goes\n' "$RED" "$OFF" "$host"
     else
         printf '%serror:%s %s built but a binary is missing\n' "$RED" "$OFF" "$host"
     fi
@@ -108,9 +135,9 @@ for t in $CROSS; do
     printf '  ..      %s (cargo zigbuild)\n' "$t"
     if cargo zigbuild --release --locked --target "$t" >/dev/null 2>&1; then
         mkdir -p "$DIST/$t"
-        for b in $BINS; do cp "$ROOT/target/$t/release/$b" "$DIST/$t/$b"; done
+        for b in $BINS; do cp "$TDIR/$t/release/$b" "$DIST/$t/$b"; done
         built="$built $t"
-        printf '  ok      %s: %s\n' "$t" "$BINS"
+        printf '  ok      %s: %s (%s)\n' "$t" "$BINS" "$(linkage "$DIST/$t/sstr")"
     else
         skipped="$skipped$t|the build failed: cargo zigbuild --release --target $t
 "
@@ -130,13 +157,14 @@ git -C "$ROOT" diff --quiet 2>/dev/null || dirty="  (with uncommitted changes)"
     printf 'staticstream %s\n' "$version"
     printf 'commit %s%s\n' "$commit" "$dirty"
     printf 'format  version 0 written by default, version 1 with --format 1\n'
+    printf 'linked  static (-C target-feature=+crt-static), so no loader is needed\n'
     printf '\n'
     for t in $built; do
         printf '%s\n' "$t"
         for b in $BINS; do
             f="$DIST/$t/$b"
             [ -f "$f" ] || continue
-            printf '  %-16s %10s  %s\n' "$b" "$(wc -c < "$f")" "$(sha256sum "$f" 2>/dev/null | cut -c1-64)"
+            printf '  %-16s %10s  %-8s %s\n' "$b" "$(wc -c < "$f")" "$(linkage "$f")" "$(sha256sum "$f" 2>/dev/null | cut -c1-64)"
         done
         printf '\n'
     done
