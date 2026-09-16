@@ -224,6 +224,29 @@ because a parity record can be the first thing a reader sees after a resync.
   worse, leaves `target/release` holding binaries built with flags the check
   never asked for. Both happened while the script was being written, which is
   how they came to be found.
+- **"Binaries run" is too weak to fail, so it was made concrete.** A binary
+  that prints its version has proved it can be loaded and little else: not
+  that its arithmetic is right on that architecture, not that a capture
+  written elsewhere reads back there, and not that the outer code -- the whole
+  of what version 1 added -- works on a 32-bit ARM. Those are the things that
+  differ between machines, so those are the things `dist/verify.sh` asks.
+- **The evidence travels with the binaries.** `dist/` carries a capture
+  written on the building machine, a copy of it with two records of one group
+  destroyed, the payload both must come back as, and the script. On the far
+  machine that script needs **a shell and nothing else** -- no cargo, no
+  python3, no checkout, no network -- which is the whole point, because a Pi
+  2B with a copy of `dist/` on it has none of those. Run under `env -i` here
+  with no HOME at all, it passes seven checks.
+- **The damage is done where the tools are.** `damage.py` and the prototype
+  are on the building machine and on no Pi; a pre-damaged file is a file, and
+  there is nothing left to go wrong at the other end. `dist.sh` **proves the
+  fixture rebuilds before shipping it** -- a fixture that did not actually
+  lose two records would have the far machine passing a test of nothing and
+  reporting success.
+- **It was made to fail before it was believed.** A third record destroyed in
+  the fixture: *did not rebuild two lost records of a group*. A binary
+  replaced with something that is not one: *sstr did not run*. Both red, both
+  naming the thing that was wrong.
 - **What could not be checked here, stated plainly.** There is no rustup, no
   cargo-make and no cargo-zigbuild on this guest; `zig` is packaged and
   installed. Alpine does package `rustup` (1.29.0) — `make tools` said

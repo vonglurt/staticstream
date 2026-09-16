@@ -145,6 +145,49 @@ for t in $CROSS; do
     fi
 done
 
+# ---- what travels with the binaries ----------------------------------------
+# THE EVIDENCE GOES WITH THEM. The phase-4 row asks that the binaries RUN on a
+# Pi 2B and an x86_64 VM, and a binary that prints its version has proved it
+# can be loaded and little else. So the dist carries a capture written here, a
+# damaged copy of it, the payload both should come back as, and the script that
+# asks the far machine those questions -- which needs a shell and nothing else
+# when it gets there. No cargo, no python3, no checkout, no network.
+#
+# The damage is done HERE, where damage.py and the prototype are, rather than
+# on the far machine, where neither is. A pre-damaged file is a file; there is
+# nothing left to go wrong at the other end.
+PROTO=${PROTO:-$ROOT/../copal/tools/copal-sstr.py}
+ACC="$DIST/acceptance"
+acceptance=no
+if [ -n "$built" ] && command -v python3 >/dev/null 2>&1 && [ -f "$PROTO" ]; then
+    first=$(printf '%s' "$built" | tr -s " " "\n" | grep -v "^$" | head -1)
+    SS="$DIST/$first/sstr"
+    mkdir -p "$ACC"
+    # One full group at a 4 KiB chunk: 16 records, so "records 2 and 4" are
+    # two records of one group with records either side of them.
+    head -c 65536 /dev/urandom > "$ACC/payload.bin"
+    if "$SS" record "$ACC/whole.sstr" --input "$ACC/payload.bin" \
+            --type application/octet-stream --chunk 4096 >/dev/null 2>&1 &&
+       python3 "$ROOT/tests/damage.py" "$PROTO" wipe "$ACC/whole.sstr" "$ACC/two-lost.sstr" 2 4 >/dev/null 2>&1; then
+        # PROVED HERE BEFORE IT IS SHIPPED. A fixture that does not actually
+        # lose two records would have the far machine passing a test of
+        # nothing, and saying so.
+        if "$SS" play "$ACC/two-lost.sstr" -o "$DIST/.probe" >/dev/null 2>&1 &&
+           cmp -s "$ACC/payload.bin" "$DIST/.probe"; then
+            cp "$ROOT/tools/verify.sh" "$DIST/verify.sh"
+            chmod 0755 "$DIST/verify.sh"
+            acceptance=yes
+            printf '  ok      acceptance: a capture, a damaged copy and verify.sh, for the far machine\n'
+        else
+            printf '  %swarning:%s the damaged fixture did not rebuild here -- not shipping it\n' "$RED" "$OFF"
+        fi
+        rm -f "$DIST/.probe"
+    fi
+    [ "$acceptance" = yes ] || rm -rf "$ACC"
+else
+    printf '  --      acceptance: needs python3 and %s to damage a capture; not built\n' "$PROTO"
+fi
+
 # ---- the manifest ----------------------------------------------------------
 # NO TIMESTAMP. A manifest that changes when nothing changed cannot be
 # compared with the last one, and the commit says when far better than a clock
@@ -158,6 +201,9 @@ git -C "$ROOT" diff --quiet 2>/dev/null || dirty="  (with uncommitted changes)"
     printf 'commit %s%s\n' "$commit" "$dirty"
     printf 'format  version 0 written by default, version 1 with --format 1\n'
     printf 'linked  static (-C target-feature=+crt-static), so no loader is needed\n'
+    if [ "$acceptance" = yes ]; then
+        printf 'verify  sh verify.sh   on the machine these are carried to\n'
+    fi
     printf '\n'
     for t in $built; do
         printf '%s\n' "$t"
