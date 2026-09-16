@@ -32,6 +32,7 @@ use std::collections::BTreeMap;
 use std::path::{Path, PathBuf};
 
 use crate::format::reader;
+use crate::workspace::Selection;
 
 /// How a Service's output reaches the person who asked for it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,8 +169,20 @@ fn ext_of(path: &Path) -> String {
 ///
 /// **A folder gets none.** The message a folder understands is Open, and the
 /// Browser already sends it with Right.
-pub fn services_for(sel: Option<&Path>, s: &BTreeMap<String, String>) -> Vec<Service> {
-    let Some(p) = sel else { return Vec::new() };
+pub fn services_for(sel: &Selection, s: &BTreeMap<String, String>) -> Vec<Service> {
+    // A QUEUE ENTRY'S VERBS ARE ytq'S OWN COMMANDS. Retry and Forget were
+    // keys in ytq's window and nothing else; rather than invent a line no
+    // program answers to, they were given the names they already had, and
+    // the window now runs the same code. So Retry here, Retry in the window
+    // and `ytq retry URL` in a shell are one operation with three ways in.
+    if let Selection::Queued(url) = sel {
+        let u = quote(url);
+        return vec![
+            Service { key: 'r', name: "Retry".into(), line: format!("ytq retry {u}"), how: How::Terminal },
+            Service { key: 'f', name: "Forget".into(), line: format!("ytq forget {u}"), how: How::Terminal },
+        ];
+    }
+    let Some(p) = sel.file() else { return Vec::new() };
     if p.is_dir() {
         return Vec::new();
     }
@@ -236,11 +249,12 @@ pub fn services_for(sel: Option<&Path>, s: &BTreeMap<String, String>) -> Vec<Ser
 }
 
 /// The Services line at the foot of the window: the keys, and what they send.
-pub fn line_for(services: &[Service]) -> String {
+pub fn line_for(services: &[Service], to_shelf: bool) -> String {
+    let what = if to_shelf { "Services to the Shelf:" } else { "Services:" };
     if services.is_empty() {
-        return "Services:  (nothing to send this selection)".into();
+        return format!("{what}  (nothing to send)");
     }
-    let mut out = String::from("Services:");
+    let mut out = String::from(what);
     for s in services {
         out.push_str(&format!("  {} {}", s.key, s.name));
     }
@@ -323,10 +337,10 @@ mod tests {
         let cap = d.join("note.sstr");
         std::fs::write(&cap, b"not really a capture").unwrap();
         std::fs::write(d.join("note.txt"), b"the transcript ytq wrote").unwrap();
-        let free = by_key(&services_for(Some(&cap), &settings(&[])), 'x').unwrap().line.clone();
+        let free = by_key(&services_for(&Selection::File(cap.clone()), &settings(&[])), 'x').unwrap().line.clone();
         assert!(free.ends_with("note.bin"), "nothing is using note.bin: {free}");
         std::fs::write(d.join("note.bin"), b"an earlier export").unwrap();
-        let taken = by_key(&services_for(Some(&cap), &settings(&[])), 'x').unwrap().line.clone();
+        let taken = by_key(&services_for(&Selection::File(cap.clone()), &settings(&[])), 'x').unwrap().line.clone();
         assert!(taken.ends_with("note-1.bin"), "note.bin is taken, so step aside: {taken}");
         assert_eq!(std::fs::read_to_string(d.join("note.bin")).unwrap(), "an earlier export");
         assert_eq!(std::fs::read_to_string(d.join("note.txt")).unwrap(), "the transcript ytq wrote");
@@ -345,8 +359,8 @@ mod tests {
     #[test]
     fn a_folder_is_sent_nothing_and_neither_is_nothing() {
         let d = scratch("folder");
-        assert!(services_for(Some(&d), &settings(&[])).is_empty(), "a folder is opened, not sent a verb");
-        assert!(services_for(None, &settings(&[])).is_empty());
+        assert!(services_for(&Selection::File(d.clone()), &settings(&[])).is_empty(), "a folder is opened, not sent a verb");
+        assert!(services_for(&Selection::Nothing, &settings(&[])).is_empty());
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -355,7 +369,7 @@ mod tests {
         let d = scratch("txt");
         let f = d.join("jawed-Me_at_the_zoo_jNQXAC9IVRw.txt");
         std::fs::write(&f, b"notes\n").unwrap();
-        let v = services_for(Some(&f), &settings(&[]));
+        let v = services_for(&Selection::File(f.clone()), &settings(&[]));
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].key, 't');
         assert_eq!(v[0].line, format!("cat {}", quote(&f.to_string_lossy())));
@@ -368,7 +382,7 @@ mod tests {
         let d = scratch("mp4");
         let f = d.join("clip.mp4");
         std::fs::write(&f, b"not really an mp4").unwrap();
-        let v = services_for(Some(&f), &settings(&[("PLAYER", "vlc")]));
+        let v = services_for(&Selection::File(f.clone()), &settings(&[("PLAYER", "vlc")]));
         assert_eq!(v.len(), 1);
         assert_eq!(v[0].line, format!("vlc {}", quote(&f.to_string_lossy())));
         let _ = std::fs::remove_dir_all(&d);
@@ -384,7 +398,7 @@ mod tests {
         // order are what is being checked here.
         let f = d.join("clip.sstr");
         std::fs::write(&f, b"not really a capture").unwrap();
-        let v = services_for(Some(&f), &settings(&[]));
+        let v = services_for(&Selection::File(f.clone()), &settings(&[]));
         let keys: Vec<char> = v.iter().map(|s| s.key).collect();
         assert_eq!(keys, ['p', 'P', 's', 'v', 'x', 'a'], "a capture that is not text has no Text");
         let q = quote(&f.to_string_lossy());
@@ -409,7 +423,7 @@ mod tests {
         let m = d.join("clip.mp4");
         std::fs::write(&m, b"x").unwrap();
         for sel in [&f, &t, &m] {
-            for sv in services_for(Some(sel), &settings(&[])) {
+            for sv in services_for(&Selection::File((*sel).clone()), &settings(&[])) {
                 assert!(
                     !"hjklq".contains(sv.key),
                     "{} takes {:?}, which moves or leaves",
@@ -426,9 +440,10 @@ mod tests {
         let d = scratch("line");
         let f = d.join("notes.txt");
         std::fs::write(&f, b"x").unwrap();
-        let v = services_for(Some(&f), &settings(&[]));
-        assert_eq!(line_for(&v), "Services:  t Text");
-        assert!(line_for(&[]).contains("nothing to send"));
+        let v = services_for(&Selection::File(f.clone()), &settings(&[]));
+        assert_eq!(line_for(&v, false), "Services:  t Text");
+        assert!(line_for(&[], false).contains("nothing to send"));
+        assert!(line_for(&v, true).starts_with("Services to the Shelf:"));
         let _ = std::fs::remove_dir_all(&d);
     }
 }

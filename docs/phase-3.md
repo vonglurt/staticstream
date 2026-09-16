@@ -76,7 +76,12 @@ chain back to the specification is unbroken.
 | **3b** | the **Inspector**: a capture's header, notes and license, `verify`'s summary, a video's notes, a folder's count | for every file in a fixture folder, what the Inspector shows equals what `sstr verify` and the file's own header say, field for field. **Done**: `make workspace-check`, 23 of 23 -- the capture's pane compared line for line with `sstr verify` over a capture `sstr` itself recorded. `make check` is 316 |
 | **3c** | the **Transcript**: `ytq.log` and sstr's own events in one pane, following as they are written | lines appear in the order the log has them, with the same text ytq wrote; a rotated `ytq.log.1` does not lose the line at the seam. **Done**: `make workspace-check`, 34 of 34 -- the band held against a log a real `ytq` wrote, and followed across the rename `ytq` itself makes past 4 MiB. `make check` is 327 |
 | **3d** | **Services**: Play, Paced, Serve, Verify, Export MP4, Open as Text, Armor — each printed in the Transcript as a command line before it runs | the acceptance test above: every Service equals its own printed command line, run in a shell. **Done**: `make workspace-check`, 47 of 47 -- Verify, Export and Serve each driven by key, their printed line read off the screen and run in a shell with a fresh HOME, and what the two left compared. `make check` is 340. Queue moves to 3e, with the rest of the queue |
-| 3e | the **Shelf** and the **Queue**: items kept for later, and ytq's queue as one more object to browse, inspect and send Retry or Forget | a queue entry inspected and retried through the Workspace leaves `queue.json` exactly as `ytq` doing the same leaves it |
+| **3e** | the **Shelf** and the **Queue**: items kept for later, and ytq's queue as one more object to browse, inspect and send Retry or Forget | a queue entry inspected and retried through the Workspace leaves `queue.json` exactly as `ytq` doing the same leaves it. **Done**: `make workspace-check`, 63 of 63 -- Retry and Forget sent from the Workspace leave the queue that `ytq retry` leaves in a shell, that `r` leaves in ytq's own window, and that `r` leaves in the **Python** ytq's window. `make check` is 356 |
+
+**Phase 3 is done.** `sstr-workspace` draws the report's screen: the Browser,
+the Shelf, the Inspector, the Transcript, the Services line and the Queue.
+`make check` is 356 -- 293 from phases 1 and 2, and 63 checks of the
+Workspace -- with 118 unit tests beside it.
 
 ## Deviations, written down as they are made
 
@@ -258,6 +263,87 @@ chain back to the specification is unbroken.
   passed against a Workspace altered to say the line *after* the outcome. Each
   row is now found by what it is. The same pass caught a Workspace with the
   quoting removed, in three other checks.
+
+### Step 3e
+
+- **Retry and Forget became `ytq` commands.** They were keys in ytq's window
+  and nothing else, so the Workspace had no line to print for them -- and 3d's
+  rule is that a verb is always something a person could have typed. Rather
+  than invent a line no program answers to, the verbs ytq already performs
+  were given the names they already had: `ytq retry URL...` and
+  `ytq forget URL...`. Both, and the window's `r` and `d`, now go through
+  `queue::retry` and `queue::forget`. **The surest way to make two things
+  agree is for there to be one of them.**
+  This is an addition to ytq beyond the Python one, and a deliberate one: it
+  takes nothing away, the existing crosschecks are untouched by it, and the
+  alternative was a Service that was not a command line.
+- **THE FOURTH WAY IS THE ONE THAT COUNTS.** The check compares the queue the
+  Workspace leaves with the queue `ytq retry` leaves in a shell and the queue
+  `r` leaves in ytq's own window -- and all three go through the same
+  function, so a comparison among them is self-consistent and would stay green
+  if that function were wrong. So the fourth is the **Python** ytq, frozen at
+  `tests/reference/ytq.py`, whose window has had `r` and `d` all along. It is
+  the only one of the four that cannot change when this crate does.
+  This is not a worry about a thing that might happen. `queue::retry` was
+  altered to stop clearing the entry's error, and **the three Rust
+  comparisons stayed green while only the Python one went red.** That is the
+  whole argument for the method, run as an experiment.
+- **A queue entry's Service names it by URL, and acts on this HOME's queue.**
+  A Service on a file names the file absolutely and means the same thing from
+  any home, which is why the check runs those in a fresh one. `ytq retry URL`
+  has no path in it: the queue it is an entry of is the one under `$HOME`.
+  The check learnt this the way these things are learnt -- it ran the shell
+  side under a fresh home and spent a while comparing a retried queue with an
+  untouched one.
+- **The Queue is opened with a key, not drawn as a row among a folder's
+  entries.** The report's screen has `Queue` in the first column beside
+  `SharedVM` and `Archive`. A column over a folder being exactly what `ls`
+  would have shown is the bar that replaces phase 3's crosscheck, and a
+  synthetic row in a folder's column retires it. Shift-Q pushes the Queue as a
+  column of its own, and Left backs out of it; `q` still leaves, because a
+  queue is not worth losing a window over.
+- **The Queue column is in `queue.json`'s order, which is `ytq list`'s** --
+  not the window's, which sorts by state. Both orders are ytq's; the column is
+  checked against `ytq list` because that is the one a person can print.
+- **A queue row is cut, not elided.** `elide` keeps a name's extension because
+  that is what tells two captures apart. A status and a title have no
+  extension to keep.
+- **The Inspector draws a queue entry with `live_view`**, ytq's own renderer
+  for the live record, for the same reason it draws `sstr verify`'s lines for
+  a capture: one renderer, so the pane and the command cannot drift.
+  `attempts` is a number and `queue::text` is for strings -- it rendered as
+  nothing until that was noticed, which is how a field goes missing quietly.
+- **The Shelf is kept in memory, for as long as the window is open.** A file
+  of it would be the one thing this Workspace has refused all the way
+  through: something to keep in step with the folders, stale the moment a
+  picked capture is renamed by something else. The Browser reads the disk; the
+  Shelf holds what was picked while looking.
+- **A Service goes to everything on the Shelf**, each as its own command line
+  in the Transcript, and to the selection when the Shelf is empty. That is
+  what "items picked for later" is for -- later being when a verb is sent. The
+  Services line says `Services to the Shelf:` so the keys never lie about
+  where they point, and it offers a key that **any** of the shelved items
+  takes, named once.
+- **The Transcript is polled before a Service's outcome is said.** It cannot
+  follow `ytq.log` while a Service holds the screen, so `Retry ok` landed
+  above ytq's own line about what it did -- with an earlier timestamp than the
+  line above it, which reads as a fault in the clock rather than in the order.
+- **The check holds `run.lock` while driving ytq's window.** The window takes
+  that lock and downloads whatever is queued, which is what it is for and
+  exactly what this comparison must not include: left alone it retried the
+  entry and then downloaded it with the stand-in yt-dlp, and the check was
+  comparing a retry against a retry and a finished download. Holding the lock
+  is the ordinary state of another ytq already downloading. `flock(1)` and ytq
+  both use `flock(2)`, so they contend; fcntl locks would not have.
+- **The window sorts by state and the Workspace does not**, so the fixture's
+  second entry is `rejected` rather than `done`: `ORDER` puts `done` above
+  `failed` and `rejected` below it, and with a `done` entry the window's first
+  row was the wrong one and `r` retried it.
+- **Python writes `1700000000.0` where Rust writes `1700000000`**, and the
+  Python comparison normalises whole floats as
+  `tests/ytq-runner-crosscheck.sh` has since phase 2. The Rust-against-Rust
+  comparisons are left byte for byte, which is a stronger statement and costs
+  nothing.
 
 ## Decisions already made
 

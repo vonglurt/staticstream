@@ -33,6 +33,11 @@
 #      command line the Transcript printed BEFORE it ran, run that exact
 #      line in a shell with a fresh HOME, and compare what each left --
 #      what was printed, what was written, and the exit status
+#   Q  the Queue (3e): the column is what `ytq list` lists, and a Retry or a
+#      Forget sent from the Workspace leaves queue.json byte for byte as
+#      `ytq retry` does in a shell AND as `r` does in ytq's own window
+#   H  the Shelf (3e): Space picks the selection up and puts it down, and a
+#      Service sent with a Shelf goes to everything on it
 #
 # Nothing here touches the real queue, archive folder or terminal: every run
 # has a throwaway HOME and its own private tmux server.
@@ -490,11 +495,20 @@ FRESH="$W/fresh-home"; mkdir -p "$FRESH"
 # A fresh HOME, and none of the Workspace's environment: a command line that
 # only works inside the window it came from is not a command line.
 in_a_shell() { env -i HOME="$FRESH" PATH="$ROOT/target/release:/usr/bin:/bin" sh -c "$1" 2>&1; }
+# THE QUEUE'S SERVICES NEED THIS HOME, and that is not a hole in the test.
+# A Service on a file names the file absolutely, so it means the same thing
+# from any home, and `in_a_shell` proves it by using a different one. A
+# Service on a queue entry names the entry by its URL, and the queue it is an
+# entry of is the one under $HOME -- `ytq retry URL` typed by the same person
+# at the same machine. Running it under a fresh home would be asking a
+# different queue about it, and it quietly did: the first run of this check
+# compared a retried queue with an untouched one.
+in_this_home() { env -i HOME="$H" PATH="$ROOT/target/release:/usr/bin:/bin" sh -c "$1" 2>&1; }
 
 # The last command line the Transcript printed. Looked for by its shape
 # rather than by counting lines back, so a Service that prints as well as
 # runs cannot shift it.
-said() { band $VW $VH | grep -v '^$' | cut -c10- | grep -E '^(sstr|cat|mpv|vlc) ' | tail -1; }
+said() { band $VW $VH | grep -v '^$' | cut -c10- | grep -E '^(sstr|ytq|cat|mpv|vlc) ' | tail -1; }
 # The last line of the band: a Service's outcome.
 outcome() { band $VW $VH | grep -v '^$' | cut -c10- | tail -1; }
 # What the LAST Service to take the terminal wrote there.
@@ -607,7 +621,7 @@ if start "${VW}x${VH}"; then
 
     # -- A folder is opened, not sent a verb --
     if select_name "SharedVM"; then
-        if screen | sed -n "${VH}p" | grep -q 'nothing to send this selection'; then
+        if screen | sed -n "${VH}p" | grep -q 'nothing to send'; then
             ok "V a folder is offered no Services"
         else
             bad "V a folder was offered Services: $(screen | sed -n "${VH}p")"
@@ -658,6 +672,278 @@ else
     printf '  --      V Serve not checked: no curl, or something is on port %s\n' "$SERVE_PORT"
 fi
 rm -f "$A/$AWKWARD"
+
+# ---- Q: the Queue (3e) ------------------------------------------------------
+# THE ANCHOR IS ytq, FOUR WAYS, AND ONE OF THEM IS OUTSIDE THIS PROGRAM.
+#
+# The done-condition for this step is that a queue entry retried through the
+# Workspace leaves queue.json exactly as ytq doing the same leaves it. ytq
+# does the same in three places now: `r` in its window, where Retry has always
+# lived; `ytq retry URL`, the command line the Workspace's Service is; and the
+# Workspace itself. All three go through queue::retry, so a comparison among
+# them is self-consistent -- it would stay green if queue::retry were wrong,
+# because all three would be wrong together.
+#
+# So the fourth is the PYTHON ytq, frozen at tests/reference/ytq.py, whose
+# window has had `r` and `d` all along. That is the specification phases 1 and
+# 2 were checked against, and it is the only one of the four that cannot
+# change when this crate does. It is what makes the other three mean
+# something.
+QJ="$H/.local/share/ytq/queue.json"
+RUNLOCK="$H/.local/share/ytq/run.lock"
+FAILED_URL="https://www.youtube.com/watch?v=jNQXAC9IVRw"
+DONE_URL="https://www.youtube.com/watch?v=SWHZolxKdVU"
+
+# The queue each of the three is given, fresh every time.
+fresh_queue() {
+    mkdir -p "$(dirname "$QJ")"
+    cat > "$QJ" <<JSONQ
+[{"url": "$FAILED_URL", "title": "Me at the zoo", "status": "failed", "quality": "240p", "progress": "", "file": "", "attempts": 2, "error": "HTTP Error 403: Forbidden", "added": 1700000000.0, "live": {}, "cookie_tried": false},
+ {"url": "$DONE_URL", "title": "A short", "status": "rejected", "quality": "1080p", "progress": "", "file": "/x/A-short_SWHZolxKdVU.sstr", "attempts": 1, "error": "", "added": 1700000002.0, "live": {}, "cookie_tried": false}]
+JSONQ
+}
+
+# One key in ytq's own window, in a pane of its own. ytq with no arguments is
+# the window.
+#
+# THE WINDOW SORTS BY STATE AND THE WORKSPACE DOES NOT, so the second entry
+# of the fixture is `rejected` rather than `done`: ORDER puts done (6) above
+# failed (7) and rejected (8) below it, so with a done entry the window's
+# first row was `A short` and `r` retried the wrong one. With rejected, the
+# failed entry is the first row in both, and no walking is needed. The
+# Workspace's column is in queue.json's order, which is `ytq list`'s.
+window_key() {
+    _key=$1
+    _prog=${2:-$YTQ}
+    mkdir -p "$(dirname "$QJ")"
+    : >> "$RUNLOCK"
+    # HOLD run.lock, SO THE WINDOW DOES NOT DOWNLOAD WHAT IT IS SHOWN. ytq's
+    # window takes run.lock and starts downloading whatever is queued, which
+    # is what it is for -- and it is the thing this comparison must not
+    # include, because Retry in the Workspace does not start a runner. Left
+    # to itself the window retried the entry and then downloaded it with the
+    # stand-in yt-dlp, and the check was comparing a retry against a retry
+    # and a finished download. Holding the lock is the ordinary state of
+    # another ytq already downloading: the window draws the same queue and
+    # answers the same keys, and tries for the lock once a second meanwhile.
+    #
+    # flock(1) and ytq both use flock(2), so they contend. fcntl locks would
+    # not have.
+    (
+        flock -n 9 || exit 2
+        T kill-session -t yw 2>/dev/null
+        # $_prog is one or two words -- the binary, or python3 and a script --
+        # so it is left unquoted on purpose.
+        # shellcheck disable=SC2086
+        T new-session -d -s yw -x 100 -y 24 \
+            env -i HOME="$H" PATH="$ROOT/tests/standin:$ROOT/target/release:/usr/bin:/bin" TERM=xterm-256color \
+            $_prog
+        _n=0
+        while ! T capture-pane -p -t yw 2>/dev/null | grep -q 'Me at the zoo'; do
+            _n=$((_n + 1))
+            [ $_n -gt 100 ] && { T kill-session -t yw 2>/dev/null; exit 1; }
+            sleep 0.1
+        done
+        sleep 0.4
+        T send-keys -t yw "$_key"; sleep 0.9
+        T send-keys -t yw q; sleep 0.7
+        T kill-session -t yw 2>/dev/null
+        exit 0
+    ) 9>>"$RUNLOCK"
+}
+
+# A queue as JSON with whole floats written one way.
+#
+# PYTHON WRITES 1700000000.0 WHERE RUST WRITES 1700000000, and they are one
+# number -- the difference tests/ytq-runner-crosscheck.sh has normalised since
+# phase 2. This is used ONLY where a Python-written queue is one side of the
+# comparison. The Rust-against-Rust ones are left byte for byte, which is a
+# stronger statement and costs nothing to make.
+queue_json() {
+    python3 -c '
+import json, sys
+def whole(v):
+    if isinstance(v, float) and v.is_integer(): return int(v)
+    if isinstance(v, dict): return {k: whole(x) for k, x in v.items()}
+    if isinstance(v, list): return [whole(x) for x in v]
+    return v
+print(json.dumps(whole(json.load(open(sys.argv[1]))), indent=1, sort_keys=True, ensure_ascii=False))' "$1"
+}
+
+fresh_queue
+if start "${VW}x${VH}"; then
+    keys Q; sleep 0.6
+    if screen | sed -n '1p' | grep -q 'the Queue'; then
+        ok "Q Shift-Q opens the Queue"
+    else
+        bad "Q Shift-Q did not open the Queue: $(screen | sed -n '1p')"
+    fi
+    # THE COLUMN IS WHAT `ytq list` LISTS, in the same order. ytq list is
+    # `{:<13} {:<10} {}`: status in columns 1-13, a space, quality in 15-24,
+    # a space, and the title from 26. Counted rather than guessed -- 24 put
+    # two of the gap's spaces into the title. An entry with an error gets a
+    # second, indented line, which is not a row.
+    got=$(column 2 $VW $VH)
+    want=$(env -i HOME="$H" PATH="/usr/bin:/bin" "$YTQ" list \
+        | grep -v '^              ' \
+        | while IFS= read -r row; do
+              st=$(printf '%s' "$row" | cut -c1-13 | sed 's/ *$//')
+              ti=$(printf '%s' "$row" | cut -c26-)
+              printf '%-11s %s\n' "$st" "$ti" | cut -c"1-$(( VW / 3 - 4 ))" | sed 's/ *$//'
+          done)
+    same "Q the column is what ytq list lists, in its order" "$want" "$got"
+
+    if pane3 $VW $VH | grep -q 'HTTP Error 403: Forbidden'; then
+        ok "Q the Inspector shows the entry's error"
+    else
+        bad "Q the Inspector did not show the error"
+    fi
+    if pane3 $VW $VH | grep -q '^status       failed$'; then
+        ok "Q the Inspector shows the entry's state"
+    else
+        bad "Q the Inspector did not show the state"
+    fi
+
+    keys r; sleep 1.5
+    # The band is not on screen while a Service holds the terminal, so the
+    # line is read once the window is back.
+    keys Enter; sleep 0.8
+    same "Q the line Retry printed is ytq retry on the entry" \
+        "ytq retry '$FAILED_URL'" "$(said)"
+    cp "$QJ" "$W/q-workspace"
+    stop
+else
+    bad "Q the Workspace did not draw"
+fi
+
+fresh_queue
+in_this_home "ytq retry '$FAILED_URL'" >/dev/null 2>&1
+cp "$QJ" "$W/q-shell"
+
+fresh_queue
+if window_key r; then
+    cp "$QJ" "$W/q-window"
+    if cmp -s "$W/q-workspace" "$W/q-shell"; then
+        ok "Q Retry leaves the queue ytq retry leaves, byte for byte"
+    else
+        bad "Q Retry and ytq retry left different queues"
+        diff "$W/q-shell" "$W/q-workspace" | head -6
+    fi
+    if cmp -s "$W/q-workspace" "$W/q-window"; then
+        ok "Q and the queue r in ytq's own window leaves"
+    else
+        bad "Q Retry and the window's r left different queues"
+        diff "$W/q-window" "$W/q-workspace" | head -6
+    fi
+else
+    bad "Q ytq's window did not draw, so Retry has nothing to be compared with"
+fi
+
+# -- and the Python ytq's own window, which is the specification --
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import curses' 2>/dev/null; then
+    fresh_queue
+    if window_key r "python3 $ROOT/tests/reference/ytq.py"; then
+        cp "$QJ" "$W/q-python"
+        same "Q and the queue r in the PYTHON ytq's window leaves" \
+            "$(queue_json "$W/q-python")" "$(queue_json "$W/q-workspace")"
+    else
+        bad "Q the Python ytq's window did not draw"
+    fi
+else
+    printf '  --      Q the Python window not checked: no python3 with curses\n'
+fi
+
+fresh_queue
+if start "${VW}x${VH}"; then
+    keys Q; sleep 0.6
+    keys f; sleep 1.5
+    keys Enter; sleep 0.8
+    same "Q the line Forget printed is ytq forget on the entry" \
+        "ytq forget '$FAILED_URL'" "$(said)"
+    cp "$QJ" "$W/f-workspace"
+    stop
+else
+    bad "Q the Workspace did not draw to forget"
+fi
+fresh_queue
+in_this_home "ytq forget '$FAILED_URL'" >/dev/null 2>&1
+cp "$QJ" "$W/f-shell"
+fresh_queue
+if window_key d; then
+    cp "$QJ" "$W/f-window"
+    if cmp -s "$W/f-workspace" "$W/f-shell"; then
+        ok "Q Forget leaves the queue ytq forget leaves, byte for byte"
+    else
+        bad "Q Forget and ytq forget left different queues"
+        diff "$W/f-shell" "$W/f-workspace" | head -6
+    fi
+    if cmp -s "$W/f-workspace" "$W/f-window"; then
+        ok "Q and the queue d in ytq's own window leaves"
+    else
+        bad "Q Forget and the window's d left different queues"
+    fi
+else
+    bad "Q ytq's window did not draw, so Forget has nothing to be compared with"
+fi
+# -- Forget, from the Python window too --
+if command -v python3 >/dev/null 2>&1 && python3 -c 'import curses' 2>/dev/null; then
+    fresh_queue
+    if window_key d "python3 $ROOT/tests/reference/ytq.py"; then
+        cp "$QJ" "$W/f-python"
+        same "Q and the queue d in the PYTHON ytq's window leaves" \
+            "$(queue_json "$W/f-python")" "$(queue_json "$W/f-workspace")"
+    else
+        bad "Q the Python ytq's window did not draw to forget"
+    fi
+fi
+rm -f "$QJ" "$W/q-workspace" "$W/q-shell" "$W/q-window" "$W/q-python" "$W/f-workspace" "$W/f-shell" "$W/f-window" "$W/f-python"
+
+# ---- H: the Shelf (3e) ------------------------------------------------------
+if start "${VW}x${VH}"; then
+    if select_name "capture.sstr"; then
+        keys Space; sleep 0.5
+        if screen | sed -n '2p' | grep -q '\[capture.sstr\]'; then
+            ok "H Space picks the selection up onto the Shelf"
+        else
+            bad "H Space did not shelve it: $(screen | sed -n '2p')"
+        fi
+        if screen | sed -n "${VH}p" | grep -q 'Services to the Shelf:'; then
+            ok "H and the Services line says where the keys now point"
+        else
+            bad "H the Services line did not follow the Shelf"
+        fi
+        keys Space; sleep 0.5
+        if screen | sed -n '2p' | grep -q 'nothing picked yet'; then
+            ok "H Space again puts it back down"
+        else
+            bad "H Space did not unshelve it: $(screen | sed -n '2p')"
+        fi
+
+        # A SERVICE WITH A SHELF GOES TO EVERYTHING ON IT, each as its own
+        # command line, which is what a Shelf is for. Each Verify takes the
+        # terminal and waits, so there is an Enter between them.
+        keys Space; sleep 0.4
+        if select_name "beta.sstr"; then
+            keys Space; sleep 0.4
+            keys v; sleep 1.5
+            keys Enter; sleep 1.5
+            keys Enter; sleep 0.8
+            n=$(band $VW $VH | grep -v '^$' | cut -c10- | grep -c '^Verify ')
+            if [ "$n" -ge 2 ]; then
+                ok "H a Service with two on the Shelf is sent to both"
+            else
+                bad "H a Service with two shelved ran $n times, not 2"
+            fi
+        else
+            bad "H could not select the second capture"
+        fi
+    else
+        bad "H could not select the capture"
+    fi
+    stop
+else
+    bad "H the Workspace did not draw"
+fi
 
 # ---- S: where it starts ----------------------------------------------------
 if start 80x24; then

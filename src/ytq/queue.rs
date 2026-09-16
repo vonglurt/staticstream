@@ -108,6 +108,55 @@ pub fn update(paths: &Paths, url: &str, fields: Vec<(&str, Value)>) -> io::Resul
     })
 }
 
+/// What [`retry`] did.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Retried {
+    /// Put back in the queue, in this state.
+    Queued(&'static str),
+    /// It is downloading now: there is nothing to retry about work in hand.
+    Downloading,
+    /// No entry with that URL.
+    Missing,
+}
+
+/// Retry: put an entry back in the queue.
+///
+/// **This is the window's `r`, moved somewhere both can call it.** The
+/// Workspace sends Retry as `ytq retry URL`, because a verb is always
+/// something a person could have typed, and the done-condition for that step
+/// is that the queue it leaves is the one `ytq` leaves doing the same. The
+/// surest way to make two things agree is for there to be one of them.
+///
+/// An entry with no title has never been looked at, so it goes back to
+/// `checking`; one with a title has, so it goes back to `queued`. The error
+/// goes, because it belongs to the attempt being abandoned.
+pub fn retry(paths: &Paths, url: &str) -> io::Result<Retried> {
+    edit(paths, |items| {
+        let Some(it) = find(items, url) else { return Retried::Missing };
+        if status(it) == "downloading" {
+            return Retried::Downloading;
+        }
+        let back = if text(it, "title").is_empty() { "checking" } else { "queued" };
+        it.set("status", Value::str(back));
+        it.set("error", Value::str(""));
+        Retried::Queued(back)
+    })
+}
+
+/// Forget: take an entry out of the queue, and hand back what went.
+///
+/// The window's `d`, in the same way and for the same reason as [`retry`].
+/// Whatever is downloading it finds out at its next progress line; the
+/// window additionally kills its own child, which is the one thing only the
+/// window can do.
+pub fn forget(paths: &Paths, url: &str) -> io::Result<Option<Value>> {
+    edit(paths, |items| {
+        let gone = items.iter().find(|i| text(i, "url") == url).cloned();
+        items.retain(|i| text(i, "url") != url);
+        gone
+    })
+}
+
 /// run.lock: held by the one process that downloads.
 #[derive(Default)]
 pub struct RunLock {
@@ -263,4 +312,90 @@ pub fn enqueue(paths: &Paths, run_lock: &RunLock, urls: &[String], run: bool) ->
         };
         (added, runner)
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn scratch(name: &str) -> (PathBuf, Paths) {
+        let home = std::env::temp_dir().join(format!("sstr-queue-{}-{}", std::process::id(), name));
+        let _ = std::fs::remove_dir_all(&home);
+        std::fs::create_dir_all(&home).unwrap();
+        let paths = Paths::from_lookup(|k| (k == "HOME").then(|| home.clone())).unwrap();
+        std::fs::create_dir_all(paths.queue.parent().unwrap()).unwrap();
+        (home, paths)
+    }
+
+    fn write(paths: &Paths, json: &str) {
+        std::fs::write(&paths.queue, json).unwrap();
+    }
+
+    fn field(paths: &Paths, url: &str, key: &str) -> String {
+        snapshot(paths)
+            .iter()
+            .find(|i| text(i, "url") == url)
+            .map(|i| text(i, key).to_string())
+            .unwrap_or_else(|| "<gone>".into())
+    }
+
+    const U: &str = "https://www.youtube.com/watch?v=jNQXAC9IVRw";
+
+    #[test]
+    fn retry_puts_a_failed_entry_back_and_drops_its_error() {
+        let (home, paths) = scratch("retry");
+        write(&paths, &format!(
+            r#"[{{"url": "{U}", "title": "Me at the zoo", "status": "failed", "error": "HTTP Error 403: Forbidden", "added": 1.0}}]"#
+        ));
+        assert_eq!(retry(&paths, U).unwrap(), Retried::Queued("queued"));
+        assert_eq!(field(&paths, U, "status"), "queued");
+        assert_eq!(field(&paths, U, "error"), "");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// An entry with no title has never been looked at, so retrying it means
+    /// looking at it -- which is `checking`, not `queued`.
+    #[test]
+    fn retry_sends_an_entry_with_no_title_back_to_checking() {
+        let (home, paths) = scratch("retry-untitled");
+        write(&paths, &format!(r#"[{{"url": "{U}", "title": "", "status": "rejected", "error": "no video", "added": 1.0}}]"#));
+        assert_eq!(retry(&paths, U).unwrap(), Retried::Queued("checking"));
+        assert_eq!(field(&paths, U, "status"), "checking");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn retry_leaves_work_in_hand_alone() {
+        let (home, paths) = scratch("retry-downloading");
+        write(&paths, &format!(r#"[{{"url": "{U}", "title": "t", "status": "downloading", "error": "", "added": 1.0}}]"#));
+        assert_eq!(retry(&paths, U).unwrap(), Retried::Downloading);
+        assert_eq!(field(&paths, U, "status"), "downloading", "nothing to retry about a download in progress");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn retry_and_forget_say_so_when_there_is_no_such_entry() {
+        let (home, paths) = scratch("missing");
+        write(&paths, "[]");
+        assert_eq!(retry(&paths, U).unwrap(), Retried::Missing);
+        assert_eq!(forget(&paths, U).unwrap(), None);
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    #[test]
+    fn forget_takes_the_entry_out_and_leaves_the_rest_in_order() {
+        let (home, paths) = scratch("forget");
+        let other = "https://www.youtube.com/watch?v=SWHZolxKdVU";
+        write(&paths, &format!(
+            r#"[{{"url": "{U}", "title": "one", "status": "failed", "error": "", "added": 1.0}},
+                {{"url": "{other}", "title": "two", "status": "done", "error": "", "added": 2.0}}]"#
+        ));
+        let gone = forget(&paths, U).unwrap().expect("it was there");
+        assert_eq!(text(&gone, "title"), "one", "what went is handed back, so the caller can say what it was");
+        let left = snapshot(&paths);
+        assert_eq!(left.len(), 1);
+        assert_eq!(text(&left[0], "url"), other);
+        let _ = std::fs::remove_dir_all(&home);
+    }
 }

@@ -320,16 +320,14 @@ impl Window {
                     let it = current.unwrap();
                     let url = text(it, "url").to_string();
                     // Whoever is downloading it notices at its next progress line.
-                    let _ = queue::edit(&r.paths, |live| live.retain(|i| text(i, "url") != url));
+                    let _ = queue::forget(&r.paths, &url);
                     log(&r.paths, &format!("{}: deleted from the window (was {})", short(&url), status(it)));
                     r.kill_if_current(&url);
                 }
                 Key::Char('r') if current.is_some() => {
-                    let it = current.unwrap();
-                    if status(it) != "downloading" {
-                        let back = if text(it, "title").is_empty() { "checking" } else { "queued" };
-                        let _ = queue::update(&r.paths, text(it, "url"), vec![("status", Value::str(back)), ("error", Value::str(""))]);
-                    }
+                    // queue::retry, so that `ytq retry URL` and this key
+                    // cannot leave two different queues behind.
+                    let _ = queue::retry(&r.paths, text(current.unwrap(), "url"));
                 }
                 Key::Char('c') if current.is_some() => {
                     message = if status(current.unwrap()) == "cookies" {

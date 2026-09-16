@@ -39,6 +39,9 @@ ytq -- a yt-dlp download queue that watches the clipboard.
   ytq cookies        retry what was waiting on a Brave sign-in
   ytq transcript URL...  just the captions, as text, for YouTube videos
   ytq list           every entry: queued, done, waiting, failed
+  ytq retry URL...   put an entry back in the queue (r in the window)
+  ytq forget URL...  take an entry out of the queue (d in the window); the
+                     file it already downloaded stays
   ytq clear          forget finished, rejected and failed entries (h twice in
                      the window); the files and the log stay
 
@@ -271,7 +274,7 @@ fn cmd_cookies(ctx: &Ctx, run: bool) -> i32 {
 
 fn help(ctx: &Ctx, cmd: &str) -> i32 {
     println!("{HEADER}");
-    println!("usage: ytq | ytq clip | ytq add URL... | ytq run | ytq status | ytq cookies | ytq transcript URL... | ytq list | ytq clear");
+    println!("usage: ytq | ytq clip | ytq add URL... | ytq run | ytq status | ytq cookies | ytq transcript URL... | ytq list | ytq retry URL... | ytq forget URL... | ytq clear");
     println!();
     let conf = &ctx.paths.ytq_config;
     println!("config: {} ({})", ctx.tilde(&conf.to_string_lossy()), if conf.is_file() { "found" } else { "not there -- the defaults apply" });
@@ -416,6 +419,47 @@ pub fn main(argv: &[String]) -> i32 {
         "list" => {
             cmd_list(&ctx);
             0
+        }
+        // RETRY AND FORGET WERE ONLY KEYS IN THE WINDOW until now. The
+        // Workspace sends them as Services, and a Service is a command line;
+        // rather than invent a line that no program answers to, the verbs ytq
+        // already performs got the names they already had. Both go through
+        // queue::retry and queue::forget, which the window now calls too, so
+        // the key and the command line cannot leave two different queues.
+        "retry" if args.len() > 1 => {
+            let mut bad = 0;
+            for u in &args[1..] {
+                match queue::retry(&ctx.paths, u) {
+                    Ok(queue::Retried::Queued(st)) => ctx.say(&format!("{} back in the queue ({st})", short(u)), false),
+                    Ok(queue::Retried::Downloading) => ctx.say(&format!("{} is downloading now", short(u)), false),
+                    Ok(queue::Retried::Missing) => {
+                        eprintln!("ytq: not in the queue: {u}");
+                        bad += 1;
+                    }
+                    Err(e) => {
+                        eprintln!("ytq: {e}");
+                        bad += 1;
+                    }
+                }
+            }
+            i32::from(bad > 0)
+        }
+        "forget" if args.len() > 1 => {
+            let mut bad = 0;
+            for u in &args[1..] {
+                match queue::forget(&ctx.paths, u) {
+                    Ok(Some(gone)) => ctx.say(&format!("{} forgotten (was {})", short(u), status(&gone)), false),
+                    Ok(None) => {
+                        eprintln!("ytq: not in the queue: {u}");
+                        bad += 1;
+                    }
+                    Err(e) => {
+                        eprintln!("ytq: {e}");
+                        bad += 1;
+                    }
+                }
+            }
+            i32::from(bad > 0)
         }
         "clear" => match queue::edit(&ctx.paths, |items| {
             let n = items.len();

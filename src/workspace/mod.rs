@@ -6,9 +6,8 @@
 //! Services sent to the selection.
 //!
 //! Step 3a drew the frame and the **Browser**, step 3b the **Inspector**,
-//! step 3c the **Transcript** and step 3d **Services**. The Shelf and the
-//! Queue (3e) have their places on the screen and say which step fills them,
-//! so the window is honest about what it does not do yet.
+//! step 3c the **Transcript**, step 3d **Services**, and step 3e the
+//! **Shelf** and the **Queue**. That is the whole of the report's screen.
 //!
 //! **A verb is always something a person could have typed.** A Service is a
 //! command line, written into the Transcript and then handed to `sh -c`
@@ -35,7 +34,7 @@ use std::process::{Child, Command, ExitCode, Stdio};
 use std::time::Duration;
 
 use crate::ytq::term::{self, cut, ljust, Frame, Key, Keys, Screen, Seg, Style, Term};
-use crate::ytq::{runner, settings};
+use crate::ytq::{live, queue, runner, settings, sys, Paths};
 
 pub mod services;
 pub mod transcript;
@@ -86,6 +85,8 @@ sstr-workspace -- the Workspace: a Browser over folders of streams
 
   up down / k j   move          right / l / Enter   open the folder
   left / h        back out      q / Esc             leave
+  Space           pick the selection up onto the Shelf, or put it down
+  Q               ytq's queue, as one more column to browse
 
 The Inspector shows the selection: for a capture, what `sstr verify` says
 about it, in the same words.
@@ -95,6 +96,10 @@ says which the selection takes:
 
   p Play      P Paced     s Serve     v Verify
   x Export    t Text      a Armor
+  r Retry     f Forget                        (on a queue entry)
+
+With anything on the Shelf, a Service goes to everything on it, one command
+line each, and the foot of the window says so.
 
 EVERY SERVICE IS A COMMAND LINE, written into the Transcript before it runs
 and then run exactly as written -- so it can be read, copied, and typed
@@ -105,36 +110,116 @@ as ytq reads them; PLAYER (mpv) and SERVE (127.0.0.1:8080) come from the same
 files.
 ";
 
-/// One entry in a folder, as `ls` would list it.
+/// One row of a column: a file, a folder, or an entry in ytq's queue.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Entry {
     pub name: String,
     pub is_dir: bool,
+    /// The URL of the queue entry this row stands for, when the column is the
+    /// Queue; empty otherwise.
+    ///
+    /// **A row stands for an entry rather than holding one.** `queue.json` is
+    /// a file several ytq processes write, and a copy taken when the column
+    /// was built would be out of date before anyone looked at it. The URL is
+    /// the name of a thing; the thing is read again when it is wanted.
+    pub url: String,
 }
 
-/// One folder's worth of entries: a Miller column.
+/// What a column is over.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Over {
+    /// A folder. A column over one is exactly what `ls` would have shown --
+    /// the bar that replaces phase 3's crosscheck.
+    Folder,
+    /// ytq's queue, which is one file rather than a folder.
+    Queue,
+}
+
+/// What is selected, which is not always a file.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Selection {
+    File(PathBuf),
+    /// An entry in ytq's queue, by URL.
+    Queued(String),
+    Nothing,
+}
+
+impl Selection {
+    pub fn file(&self) -> Option<&Path> {
+        match self {
+            Selection::File(p) => Some(p),
+            _ => None,
+        }
+    }
+}
+
+/// One column: a folder's entries, or the queue's.
 pub struct Column {
     pub dir: PathBuf,
+    pub over: Over,
     pub entries: Vec<Entry>,
-    /// Which entry is selected. Meaningless, and 0, when the folder is empty.
+    /// Which entry is selected. Meaningless, and 0, when the column is empty.
     pub sel: usize,
-    /// The first entry drawn, so a long folder scrolls.
+    /// The first entry drawn, so a long column scrolls.
     pub top: usize,
 }
 
 impl Column {
     pub fn open(dir: &Path) -> Column {
-        Column { dir: dir.to_path_buf(), entries: read_dir_sorted(dir), sel: 0, top: 0 }
+        Column { dir: dir.to_path_buf(), over: Over::Folder, entries: read_dir_sorted(dir), sel: 0, top: 0 }
+    }
+
+    /// The Queue as a column: ytq's queue.json, in the order it has them.
+    pub fn queue(paths: &Paths) -> Column {
+        Column { dir: paths.queue.clone(), over: Over::Queue, entries: queue_rows(paths), sel: 0, top: 0 }
     }
 
     pub fn selected(&self) -> Option<&Entry> {
         self.entries.get(self.sel)
     }
 
-    /// The selection's full path, if there is a selection.
-    pub fn path(&self) -> Option<PathBuf> {
-        self.selected().map(|e| self.dir.join(&e.name))
+    /// What the selected row stands for.
+    pub fn selection(&self) -> Selection {
+        match self.selected() {
+            None => Selection::Nothing,
+            Some(e) if self.over == Over::Queue => Selection::Queued(e.url.clone()),
+            Some(e) => Selection::File(self.dir.join(&e.name)),
+        }
     }
+
+    /// Read the queue again, keeping the selection on the same entry.
+    ///
+    /// The queue is written by whichever ytq is downloading, so a column over
+    /// it is redrawn from the file rather than remembered -- and the entry
+    /// the person is looking at is found again by its URL, not by where it
+    /// was in the list, because entries come and go around it.
+    pub fn refresh_queue(&mut self, paths: &Paths) {
+        if self.over != Over::Queue {
+            return;
+        }
+        let was = self.selected().map(|e| e.url.clone());
+        self.entries = queue_rows(paths);
+        self.sel = was
+            .and_then(|u| self.entries.iter().position(|e| e.url == u))
+            .unwrap_or_else(|| self.sel.min(self.entries.len().saturating_sub(1)));
+    }
+}
+
+/// The queue as rows, in the order `queue.json` has them -- which is the
+/// order ytq added them, and the order `ytq list` prints them.
+///
+/// A row is cut where it does not fit, not elided: `elide` keeps a name's
+/// extension because that is what tells two captures apart, and a title has
+/// no extension to keep.
+pub fn queue_rows(paths: &Paths) -> Vec<Entry> {
+    queue::snapshot(paths)
+        .iter()
+        .map(|it| Entry {
+            name: format!("{:<11} {}", queue::status(it), queue::title_or_url(it)),
+            is_dir: false,
+            url: queue::text(it, "url").to_string(),
+        })
+        .collect()
 }
 
 /// A folder's entries, in the order `ls` gives them: by name, bytewise, with
@@ -152,7 +237,7 @@ pub fn read_dir_sorted(dir: &Path) -> Vec<Entry> {
             }
             // A symlink to a folder is a folder here, as `ls -p` marks it.
             let is_dir = std::fs::metadata(e.path()).map(|m| m.is_dir()).unwrap_or(false);
-            Some(Entry { name, is_dir })
+            Some(Entry { name, is_dir, url: String::new() })
         })
         .collect();
     out.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
@@ -184,9 +269,31 @@ impl Browser {
         &self.last().dir
     }
 
-    /// What is selected right now, if anything.
-    pub fn selection(&self) -> Option<PathBuf> {
-        self.last().path()
+    /// What is selected right now.
+    pub fn selection(&self) -> Selection {
+        self.last().selection()
+    }
+
+    /// Is the deepest column the Queue?
+    pub fn over_queue(&self) -> bool {
+        self.last().over == Over::Queue
+    }
+
+    /// Open ytq's queue as a column to the right, unless it is already the
+    /// one being looked at. The report has the Queue as one more object to
+    /// browse; here it is opened with a key rather than drawn as a row among
+    /// a folder's entries, so that a column over a folder stays exactly what
+    /// `ls` would have shown.
+    pub fn open_queue(&mut self, paths: &Paths) {
+        if self.over_queue() {
+            return;
+        }
+        self.cols.push(Column::queue(paths));
+    }
+
+    /// Read the queue again, if that is what is being looked at.
+    pub fn refresh_queue(&mut self, paths: &Paths) {
+        self.last_mut().refresh_queue(paths);
     }
 
     pub fn move_by(&mut self, delta: i64) {
@@ -199,8 +306,12 @@ impl Browser {
     }
 
     /// Open the selected folder in a column to the right. A file is not opened
-    /// here: Services (3d) is what a file is sent to.
+    /// here: Services (3d) is what a file is sent to, and neither is a queue
+    /// entry, which is not a folder of anything.
     pub fn descend(&mut self) {
+        if self.over_queue() {
+            return;
+        }
         if let Some(e) = self.last().selected() {
             if e.is_dir {
                 let path = self.last().dir.join(&e.name);
@@ -276,16 +387,86 @@ fn scroll(col: &mut Column, rows: i64) {
     }
 }
 
+/// Everything a frame is drawn from besides the Browser and the window's
+/// size. A struct rather than eight arguments in a row, which is how many it
+/// had got to by the Shelf.
+pub struct View<'a> {
+    pub home: &'a Path,
+    pub transcript: &'a Transcript,
+    /// The verbs the keys will send, which is not always the selection's --
+    /// see [`targets`].
+    pub services: &'a [Service],
+    pub paths: &'a Paths,
+    pub shelf: &'a [Selection],
+}
+
+/// What the Shelf row says.
+pub fn shelf_line(shelf: &[Selection]) -> String {
+    if shelf.is_empty() {
+        return "Shelf: nothing picked yet -- Space picks the selection".into();
+    }
+    let mut out = String::from("Shelf:");
+    for s in shelf {
+        out.push_str(&format!(" [{}]", shelf_name(s)));
+    }
+    out
+}
+
+/// What one item on the Shelf is called there: a file by its name, a queue
+/// entry by the short form of its URL that ytq's own log uses.
+pub fn shelf_name(sel: &Selection) -> String {
+    match sel {
+        Selection::File(p) => p.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default(),
+        Selection::Queued(u) => crate::ytq::urls::short(u),
+        Selection::Nothing => String::new(),
+    }
+}
+
+/// What the keys send a verb to: everything on the Shelf, or the selection
+/// when the Shelf is empty.
+///
+/// **That is what a Shelf is for.** The report has it hold "items picked for
+/// later" -- later being when a verb is sent -- so picking four captures and
+/// pressing `v` verifies four captures, each as its own command line in the
+/// Transcript. Nothing is picked, so nothing has changed for anyone who does
+/// not use it: the selection is the target.
+pub fn targets(shelf: &[Selection], sel: &Selection) -> Vec<Selection> {
+    if shelf.is_empty() {
+        vec![sel.clone()]
+    } else {
+        shelf.to_vec()
+    }
+}
+
+/// The verbs any of the targets takes, each key named once, in the order the
+/// report's Services line lists them.
+pub fn services_for_all(targets: &[Selection], s: &std::collections::BTreeMap<String, String>) -> Vec<Service> {
+    let mut out: Vec<Service> = Vec::new();
+    for t in targets {
+        for sv in services::services_for(t, s) {
+            if !out.iter().any(|o| o.key == sv.key) {
+                out.push(sv);
+            }
+        }
+    }
+    out
+}
+
 /// One screen. The rows the Browser owns are drawn column by column, so a row
 /// carries a piece from each -- which is why a row holds several pieces.
-pub fn frame_of(b: &Browser, (h, w): (i64, i64), colors: bool, home: &Path, t: &Transcript, svcs: &[Service]) -> Frame {
+pub fn frame_of(b: &Browser, (h, w): (i64, i64), colors: bool, v: &View) -> Frame {
+    let (home, t, svcs, paths) = (v.home, v.transcript, v.services, v.paths);
     let mut f = Frame::new(h.max(0) as usize);
     let color = |c: u8| colors.then_some(c);
     let dim = Style { dim: true, ..Style::default() };
 
-    let head = format!(" Workspace -- {}", tilde(b.cwd(), home));
+    let head = if b.over_queue() {
+        " Workspace -- the Queue".to_string()
+    } else {
+        format!(" Workspace -- {}", tilde(b.cwd(), home))
+    };
     f.put(0, 0, &ljust(&cut(&head, w), w), Style { reverse: true, bold: true, ..Style::default() });
-    f.put(1, 0, &cut(" Shelf: nothing picked yet (3e)", w), dim);
+    f.put(1, 0, &cut(&format!(" {}", shelf_line(v.shelf)), w), dim);
     f.put(2, 0, &"-".repeat(w.max(0) as usize), dim);
 
     // The rows the columns get: everything between the two rules, less the
@@ -298,10 +479,10 @@ pub fn frame_of(b: &Browser, (h, w): (i64, i64), colors: bool, home: &Path, t: &
     if rows > 0 && cw >= MIN_COL {
         let cols = b.visible(MILLER);
         let deepest = cols.len().saturating_sub(1);
-        // The Inspector reads the selection once, not once a row.
-        let ins = inspect_lines(b.selection().as_deref());
         let ins_x = (PANES - 1) * cw;
         let ins_w = w - ins_x;
+        // The Inspector reads the selection once, not once a row.
+        let ins = inspect_lines(&b.selection(), paths, ins_w);
         for r in 0..rows {
             let mut segs: Vec<Seg> = Vec::new();
             for (i, col) in cols.iter().enumerate() {
@@ -311,7 +492,15 @@ pub fn frame_of(b: &Browser, (h, w): (i64, i64), colors: bool, home: &Path, t: &
                 let width = cw - 1;
                 if let Some(e) = col.entries.get(col.top + r as usize) {
                     let marker = if e.is_dir { ">" } else { " " };
-                    let text = format!("{} {}", ljust(&elide(&e.name, width - 3), width - 3), marker);
+                    // A file's name loses its middle so the extension stays;
+                    // a queue row is a status and a title, with no extension
+                    // to keep, so it is simply cut.
+                    let shown = if col.over == Over::Queue {
+                        cut(&e.name, width - 3)
+                    } else {
+                        elide(&e.name, width - 3)
+                    };
+                    let text = format!("{} {}", ljust(&shown, width - 3), marker);
                     let selected = col.top + r as usize == col.sel;
                     let style = if selected && i == deepest {
                         Style { reverse: true, ..Style::default() }
@@ -378,7 +567,7 @@ pub fn frame_of(b: &Browser, (h, w): (i64, i64), colors: bool, home: &Path, t: &
         let label = if r == 0 { "Transcript " } else { "           " };
         f.put(h - 1 - tr + r, 0, &cut(&format!(" {label}{text}"), w), dim);
     }
-    f.put(h - 1, 0, &cut(&format!(" {}", services::line_for(svcs)), w), dim);
+    f.put(h - 1, 0, &cut(&format!(" {}", services::line_for(svcs, !v.shelf.is_empty())), w), dim);
     f
 }
 
@@ -402,10 +591,50 @@ fn thousands(n: u64) -> String {
 /// drift. Everything else is what the file says about itself: a folder its
 /// count, a text its first lines, and a download the notes ytq wrote beside
 /// it.
-pub fn inspect_lines(sel: Option<&Path>) -> Vec<String> {
-    let Some(p) = sel else {
-        return vec!["Inspector".into(), String::new(), "(nothing selected)".into()];
+pub fn inspect_lines(sel: &Selection, paths: &Paths, w: i64) -> Vec<String> {
+    let p = match sel {
+        Selection::Nothing => {
+            return vec!["Inspector".into(), String::new(), "(nothing selected)".into()];
+        }
+        // A QUEUE ENTRY IS SHOWN AS ytq SHOWS IT. `live_view` is the renderer
+        // ytq's own window and `ytq status` draw the live record with, so the
+        // Inspector borrows it rather than reading the same fields again --
+        // the same reason the Inspector draws `sstr verify`'s lines for a
+        // capture instead of re-deriving them from the header.
+        Selection::Queued(url) => {
+            let items = queue::snapshot(paths);
+            let Some(it) = items.iter().find(|i| queue::text(i, "url") == url) else {
+                return vec![crate::ytq::urls::short(url), String::new(), "(no longer in the queue)".into()];
+            };
+            let mut v = vec![queue::title_or_url(it).to_string(), String::new()];
+            v.push(format!("status       {}", queue::status(it)));
+            for key in ["quality", "file"] {
+                let val = queue::text(it, key);
+                if !val.is_empty() {
+                    v.push(format!("{key:<12} {val}"));
+                }
+            }
+            // attempts is a number, and queue::text is for strings: it would
+            // quietly render as nothing, which is how a field goes missing
+            // without anyone noticing.
+            if let Some(n) = it.get("attempts").filter(|a| live::truthy(Some(a))) {
+                v.push(format!("{:<12} {}", "attempts", live::py_str(n)));
+            }
+            v.push(format!("url          {url}"));
+            let err = queue::text(it, "error");
+            if !err.is_empty() {
+                v.push(String::new());
+                v.push(format!("error        {err}"));
+            }
+            if queue::status(it) == "downloading" {
+                v.push(String::new());
+                v.extend(live::live_view(it, w.max(20), sys::now()));
+            }
+            return v;
+        }
+        Selection::File(p) => p.clone(),
     };
+    let p = p.as_path();
     let name = p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
     let mut v = vec![name, String::new()];
 
@@ -510,6 +739,13 @@ fn send(sv: &Service, t: &mut Transcript, keys: &Keys, screen: &mut Screen, runn
             let _ = keys.next(Duration::from_secs(600));
             let _ = term::resume();
             screen.invalidate();
+            // WHAT THE SERVICE WROTE TO ytq.log COMES FIRST. The Transcript
+            // cannot follow the log while a Service holds the screen, so
+            // without this the Workspace's note that Retry finished lands
+            // above ytq's own line saying what it did -- with an earlier
+            // timestamp than the line above it, which reads as a fault in
+            // the clock rather than in the order.
+            t.poll();
             t.say(&format!("{} {}", sv.name, said));
         }
         How::Background => {
@@ -607,12 +843,21 @@ pub fn main(argv: &[String]) -> ExitCode {
     let mut last_size = None;
     // What Services left running, so their ends are said and reaped.
     let mut running: Vec<(String, Child)> = Vec::new();
+    // THE SHELF IS KEPT IN MEMORY, for as long as the window is open. A file
+    // of it would be the one thing this Workspace has refused all the way
+    // through: something to keep in step with the folders, going stale the
+    // moment a picked capture is moved or renamed elsewhere. The Browser
+    // reads the disk; the Shelf holds what was picked while looking.
+    let mut shelf: Vec<Selection> = Vec::new();
 
     loop {
         // Before the frame is built, so a line written while the last one was
         // on screen is on this one. Nothing to read costs a single read.
         t.poll();
         reap(&mut running, &mut t);
+        // The queue is a file other ytq processes write, so a column over it
+        // is read again rather than remembered.
+        b.refresh_queue(&paths);
         let (h, w) = term::size();
         if last_size.map_or(false, |s| s != (h, w)) {
             screen.invalidate();
@@ -623,8 +868,13 @@ pub fn main(argv: &[String]) -> ExitCode {
         // The selection's Services: what the foot of the window offers, and
         // what a key sends. Built once a frame, so the two cannot disagree
         // about what `p` means.
-        let svcs = services::services_for(b.selection().as_deref(), &s);
-        let frame = frame_of(&b, (h as i64, w as i64), colors, &home, &t, &svcs);
+        let sel = b.selection();
+        // What the keys will send a verb to, and the verbs they send: the
+        // Shelf when anything is on it, else the selection.
+        let to = targets(&shelf, &sel);
+        let svcs = services_for_all(&to, &s);
+        let view = View { home: &home, transcript: &t, services: &svcs, paths: &paths, shelf: &shelf };
+        let frame = frame_of(&b, (h as i64, w as i64), colors, &view);
         let _ = screen.present(&frame, (h, w));
 
         let Some(k) = keys.next(Duration::from_millis(500)) else { continue };
@@ -634,12 +884,34 @@ pub fn main(argv: &[String]) -> ExitCode {
             Key::Up | Key::Char('k') => b.move_by(-1),
             Key::Right | Key::Char('l') | Key::Enter => b.descend(),
             Key::Left | Key::Char('h') | Key::Backspace => b.ascend(),
-            // A Service, if this selection has one for that key. The keys
-            // that move come first, so no Service can take one of them.
+            // The Queue, as one more object to browse. Shift-Q, because q
+            // leaves and a queue is not worth losing a window over.
+            Key::Char('Q') => b.open_queue(&paths),
+            // Space picks the selection up, or puts it back down.
+            Key::Char(' ') => {
+                if !matches!(sel, Selection::Nothing) {
+                    match shelf.iter().position(|x| *x == sel) {
+                        Some(i) => {
+                            shelf.remove(i);
+                            t.say(&format!("{} off the Shelf", shelf_name(&sel)));
+                        }
+                        None => {
+                            t.say(&format!("{} on the Shelf", shelf_name(&sel)));
+                            shelf.push(sel.clone());
+                        }
+                    }
+                }
+            }
+            // A Service, sent to everything the keys are aimed at -- each as
+            // its own command line, because that is what a Service is. The
+            // keys that move come first, so no Service can take one of them.
             Key::Char(c) => {
-                if let Some(sv) = services::by_key(&svcs, c) {
-                    let sv = sv.clone();
-                    send(&sv, &mut t, &keys, &mut screen, &mut running);
+                for target in &to {
+                    let one = services::services_for(target, &s);
+                    if let Some(sv) = services::by_key(&one, c) {
+                        let sv = sv.clone();
+                        send(&sv, &mut t, &keys, &mut screen, &mut running);
+                    }
                 }
             }
             _ => {}
@@ -657,6 +929,18 @@ mod tests {
     /// frame, and an empty band is a band all the same.
     fn quiet() -> Transcript {
         Transcript::follow(Path::new("/nonexistent/ytq.log"))
+    }
+
+    /// A View over a throwaway home, with nothing shelved: the frame tests
+    /// are about the frame.
+    fn view_of<'a>(d: &'a Path, t: &'a Transcript, paths: &'a Paths) -> View<'a> {
+        View { home: d, transcript: t, services: &[], paths, shelf: &[] }
+    }
+
+    /// ytq's paths under a throwaway home, so nothing here can see the real
+    /// queue however hard it tries.
+    fn paths_in(home: &Path) -> Paths {
+        Paths::from_lookup(|k| (k == "HOME").then(|| home.to_path_buf())).expect("a home")
     }
 
     /// A folder of the test's own.
@@ -722,16 +1006,16 @@ mod tests {
     #[test]
     fn the_inspector_says_what_a_folder_and_a_file_are() {
         let d = fixture("the_inspector_says_what_a_folder_and_a_file_are");
-        let lines = inspect_lines(Some(&d.join("Archive")));
+        let lines = inspect_lines(&Selection::File(d.join("Archive")), &paths_in(&d), 40);
         assert_eq!(lines[0], "Archive");
         assert_eq!(lines[2], "folder, 1 item");
 
-        let lines = inspect_lines(Some(&d.join("a.txt")));
+        let lines = inspect_lines(&Selection::File(d.join("a.txt")), &paths_in(&d), 40);
         assert_eq!(lines[0], "a.txt");
         assert_eq!(lines[2], "1 bytes");
         assert!(lines.contains(&"x".to_string()), "a text shows its first lines");
 
-        assert_eq!(inspect_lines(None)[2], "(nothing selected)");
+        assert_eq!(inspect_lines(&Selection::Nothing, &paths_in(&d), 40)[2], "(nothing selected)");
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -769,14 +1053,14 @@ mod tests {
         std::fs::write(&long, b"not really a capture").unwrap();
         let mut b = Browser::open(&d);
         // Put the selection on the long name.
-        while b.selection().map(|p| p != long).unwrap_or(false) {
+        while b.selection().file().map(|p| p != long).unwrap_or(false) {
             let before = b.cols[0].sel;
             b.move_by(1);
             if b.cols[0].sel == before {
                 break;
             }
         }
-        let f = frame_of(&b, (24, 100), false, &d, &quiet(), &[]);
+        let f = frame_of(&b, (24, 100), false, &view_of(&d, &quiet(), &paths_in(&d)));
         let ins_x = 2 * (100 / 3);
         let heading = f.rows[3]
             .iter()
@@ -801,7 +1085,7 @@ mod tests {
         let d = fixture("nothing_is_drawn_outside_the_frame");
         let b = Browser::open(&d);
         for (h, w) in [(24i64, 80i64), (12, 50), (30, 110), (8, 20)] {
-            let f = frame_of(&b, (h, w), true, &d, &quiet(), &[]);
+            let f = frame_of(&b, (h, w), true, &view_of(&d, &quiet(), &paths_in(&d)));
             assert_eq!(f.rows.len(), h as usize, "a frame is exactly the window's rows");
             for row in &f.rows {
                 for (x, text, _) in row {
@@ -814,12 +1098,101 @@ mod tests {
     }
 
     #[test]
+    fn the_shelf_says_what_is_on_it() {
+        assert!(shelf_line(&[]).contains("nothing picked yet"));
+        let shelf = vec![
+            Selection::File(PathBuf::from("/x/Videos/Archive/capture.sstr")),
+            Selection::Queued("https://www.youtube.com/watch?v=jNQXAC9IVRw".into()),
+        ];
+        // A file by its name, a queue entry by the short form ytq's own log
+        // uses -- neither by a path nobody can read at a glance.
+        assert_eq!(shelf_line(&shelf), "Shelf: [capture.sstr] [jNQXAC9IVRw]");
+    }
+
+    #[test]
+    fn the_keys_point_at_the_shelf_when_there_is_one() {
+        let sel = Selection::File(PathBuf::from("/x/a.sstr"));
+        let shelved = Selection::File(PathBuf::from("/x/b.sstr"));
+        assert_eq!(targets(&[], &sel), vec![sel.clone()], "an empty Shelf means the selection");
+        assert_eq!(
+            targets(std::slice::from_ref(&shelved), &sel),
+            vec![shelved],
+            "anything on the Shelf, and that is what the keys mean"
+        );
+    }
+
+    /// A key is offered when ANY of the targets takes it, and named once.
+    /// Otherwise a Shelf holding a capture and a transcript would offer
+    /// either every verb twice or only the verbs they share, and neither is
+    /// what pressing the key does.
+    #[test]
+    fn the_services_line_is_the_union_of_what_the_targets_take() {
+        let d = fixture("the_services_line_is_the_union");
+        let cap = d.join("b.sstr");
+        let txt = d.join("a.txt");
+        let s = std::collections::BTreeMap::new();
+        let both = [Selection::File(cap.clone()), Selection::File(txt.clone())];
+        let keys: Vec<char> = services_for_all(&both, &s).iter().map(|x| x.key).collect();
+        assert!(keys.contains(&'v'), "the capture's Verify is offered");
+        assert!(keys.contains(&'t'), "the transcript's Text is offered");
+        let mut once = keys.clone();
+        once.sort_unstable();
+        once.dedup();
+        assert_eq!(once.len(), keys.len(), "no key is named twice: {keys:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_queue_is_a_column_of_what_the_queue_holds() {
+        let d = fixture("the_queue_is_a_column");
+        let paths = paths_in(&d);
+        std::fs::create_dir_all(paths.queue.parent().unwrap()).unwrap();
+        std::fs::write(
+            &paths.queue,
+            r#"[{"url": "https://www.youtube.com/watch?v=jNQXAC9IVRw", "title": "Me at the zoo", "status": "failed", "added": 1.0},
+                {"url": "https://www.youtube.com/watch?v=SWHZolxKdVU", "title": "", "status": "queued", "added": 2.0}]"#,
+        )
+        .unwrap();
+        let rows = queue_rows(&paths);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].name, "failed      Me at the zoo");
+        // No title yet, so the row says the URL, as `ytq list` does.
+        assert!(rows[1].name.starts_with("queued      https://"), "got {:?}", rows[1].name);
+        // The row stands for the entry by URL, which is what a Service needs.
+        assert_eq!(rows[0].url, "https://www.youtube.com/watch?v=jNQXAC9IVRw");
+
+        let mut b = Browser::open(&d);
+        b.open_queue(&paths);
+        assert!(b.over_queue());
+        assert_eq!(b.selection(), Selection::Queued("https://www.youtube.com/watch?v=jNQXAC9IVRw".into()));
+        b.open_queue(&paths);
+        assert_eq!(b.cols.len(), 2, "the Queue does not open on top of itself");
+        b.descend();
+        assert_eq!(b.cols.len(), 2, "a queue entry is not a folder");
+        b.ascend();
+        assert!(!b.over_queue(), "and backing out leaves it");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// A queue entry's verbs are ytq's own commands, so that the Workspace,
+    /// the window and a shell cannot leave three different queues.
+    #[test]
+    fn a_queue_entry_is_sent_ytqs_own_commands() {
+        let s = std::collections::BTreeMap::new();
+        let url = "https://www.youtube.com/watch?v=jNQXAC9IVRw";
+        let v = services::services_for(&Selection::Queued(url.into()), &s);
+        assert_eq!(v.iter().map(|x| x.key).collect::<Vec<_>>(), ['r', 'f']);
+        assert_eq!(v[0].line, format!("ytq retry '{url}'"));
+        assert_eq!(v[1].line, format!("ytq forget '{url}'"));
+    }
+
+    #[test]
     fn the_deepest_column_holds_the_selection() {
         let d = fixture("the_deepest_column_holds_the_selection");
         let mut b = Browser::open(&d);
         b.descend();
         assert_eq!(b.visible(MILLER).len(), 2);
-        assert_eq!(b.selection().unwrap().file_name().unwrap(), "deep");
+        assert_eq!(b.selection().file().unwrap().file_name().unwrap(), "deep");
         let _ = std::fs::remove_dir_all(&d);
     }
 }
