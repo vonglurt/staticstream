@@ -27,7 +27,8 @@
 set -u
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 SSTR=${SSTR:-$ROOT/target/release/sstr}
-PROTO=${PROTO:-$ROOT/../copal/tools/copal-sstr.py}
+# Vendored; see tests/reference/README.md for why.
+PROTO=${PROTO:-$ROOT/tests/reference/copal-sstr.py}
 
 skip() { printf '  --      outer-check skipped: %s\n' "$1"; exit 0; }
 [ -x "$SSTR" ] || { printf 'outer-check: no %s -- make build\n' "$SSTR"; exit 2; }

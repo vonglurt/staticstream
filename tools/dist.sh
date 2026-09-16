@@ -171,7 +171,7 @@ done
 # The damage is done HERE, where damage.py and the prototype are, rather than
 # on the far machine, where neither is. A pre-damaged file is a file; there is
 # nothing left to go wrong at the other end.
-PROTO=${PROTO:-$ROOT/../copal/tools/copal-sstr.py}
+PROTO=${PROTO:-$ROOT/tests/reference/copal-sstr.py}
 ACC="$DIST/acceptance"
 acceptance=no
 if [ -n "$built" ] && command -v python3 >/dev/null 2>&1 && [ -f "$PROTO" ]; then

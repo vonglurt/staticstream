@@ -149,21 +149,26 @@ mod tests {
         assert_eq!(RecordType::from_byte(b'X'), None);
     }
 
-    /// The prototype is the definition of version 0 until phase 1 replaces it,
-    /// so the constants are checked against its source. The copal checkout is
-    /// found beside this one in ~/code, or at $STATICSTREAM_PROTOTYPE; without
-    /// either the test says so and passes, so a lone checkout still builds.
+    /// The prototype defines version 0, so the constants are checked against
+    /// its source.
+    ///
+    /// **IT READS THE VENDORED COPY AND FAILS WHEN IT IS NOT THERE.** It used
+    /// to look for a copal checkout beside this one and pass with a printed
+    /// "skipped" when there was none -- and it had been doing exactly that
+    /// since the five packages became one, because the path was right when the
+    /// manifest directory was `crates/staticstream/` and resolved to
+    /// `/home/copal/...` afterwards. A test that passes by not running is
+    /// worse than no test. The file is in this repository now, so its absence
+    /// is a broken checkout and is reported as one.
     #[test]
     fn constants_match_the_prototype() {
         let path = std::env::var_os("STATICSTREAM_PROTOTYPE")
             .map(std::path::PathBuf::from)
             .unwrap_or_else(|| {
-                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("../../../copal/tools/copal-sstr.py")
+                std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("tests/reference/copal-sstr.py")
             });
-        let Ok(src) = std::fs::read_to_string(&path) else {
-            eprintln!("skipped: no prototype at {}", path.display());
-            return;
-        };
+        let src = std::fs::read_to_string(&path)
+            .unwrap_or_else(|e| panic!("the vendored prototype is missing at {}: {e}", path.display()));
         for line in [
             r#"MAGIC = b"\x89SST\r\n\x1a\n""#,
             r#"SYNC = b"\xa7SSR""#,

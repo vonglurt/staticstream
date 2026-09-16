@@ -43,7 +43,7 @@ run: ## the sstr command:  make run ARGS='paths'
 workspace: ## the terminal Workspace
 	$(CARGO) run --release --quiet --bin sstr-workspace -- $(ARGS)
 
-test: ## the tests, including the constants against tools/copal-sstr.py
+test: ## the tests, including the constants against the frozen prototype
 	$(CARGO) test --quiet
 
 deps: ## prove Cargo.lock names no crate from outside this repository
@@ -71,7 +71,7 @@ check: deps ## what a commit must pass: no external crates, the tests, an offlin
 	@WS='$(CURDIR)/target/release/sstr-workspace' sh tests/workspace-check.sh
 	@printf '  ok      check passed\n'
 
-crosscheck: ## the Rust sstr against tools/copal-sstr.py in ../copal: both directions, damage, armor
+crosscheck: ## the Rust sstr against the frozen prototype: both directions, damage, armor
 	@$(CARGO) build --release --offline --locked --quiet
 	@VERBOSE=1 sh tests/crosscheck.sh
 

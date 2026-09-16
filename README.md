@@ -28,9 +28,17 @@ downloads as Static Stream by default, so the two belong together. ytq was a Pyt
 program in [copal](https://github.com/vonglurt/copal); phase 2 moved every
 line of it here, and retired that one.
 
-## Status: phase 3 of 4
+## Status: phases 0–3 done, phase 4 all but two runs
+
+`make check` is **382 checks** and **124 unit tests**, and passes with nothing
+installed but `cargo`: 44 comparisons against the Python prototype, 26 of
+version 1's outer code, 32 + 50 + 34 + 133 across ytq, and 63 of the
+Workspace. Clone it and run `make check` — it needs no second checkout, no
+network and no crates.
 
 The format is defined, built and measured by the Python prototype,
+`copal-sstr.py`, frozen here at
+[`tests/reference/copal-sstr.py`](tests/reference/README.md) and originally
 `tools/copal-sstr.py` in [copal](https://github.com/vonglurt/copal). Two
 reports there describe it:
 - [the Static Stream lab report](https://github.com/vonglurt/copal/blob/main/docs/static-stream-lab-report.md)
@@ -43,8 +51,15 @@ reports there describe it:
 | 0 | this repository: the workspace, the Makefile, the constants | `make check` passes on the guest and on the Mac |
 | 1 | the format library and `sstr` at parity with the prototype | Python writes and Rust reads, and the reverse, byte for byte, through the prototype's whole damage battery |
 | 2 | ytq in Rust, sharing the Python ytq's `queue.json` and locks, archiving to `.sstr` by default through `~/.config/copal/media.conf` | a queued video leaves a `.sstr` that verifies and plays back identical to the MP4 it replaced; Rust and Python ytq run side by side on one queue; only then does the binary `ytq` exist |
-| **3** | `sstr-workspace`: Browser, Inspector, Transcript, Services, Queue | every Service is a command line shown in the Transcript before it runs |
-| 4 | `make dist` for every target, and version 1's stronger outer code | binaries run on a Pi 2B and an x86_64 VM |
+| 3 | `sstr-workspace`: Browser, Inspector, Transcript, Services, Queue | every Service is a command line shown in the Transcript before it runs — **done** |
+| **4** | `make dist` for every target, and version 1's stronger outer code | binaries run on a Pi 2B and an x86_64 VM — **version 1 done, all three targets build; the two runs are outstanding** |
+
+**Version 1 is what `sstr record` writes.** Its parity record carries two rows
+where version 0 has one, so two lost records of a group come back instead of
+one, at about 6 % more. `--format 0` writes the older one, and readers take
+both — a version 0 reader can even read a version 1 capture and still rebuild
+a single lost record from it, which was not designed but falls out of the
+first row being version 0's own.
 
 Phases 0, 1 and 2 are done on the guest. `sstr` does everything the prototype
 does, with the same options and the same reports:
@@ -59,7 +74,7 @@ leaves no file. A failed download upstream looks exactly like that, and the
 prototype recorded it as an empty capture.
 
 `make crosscheck` is phase 1's acceptance test, and passes: 44 comparisons
-against `tools/copal-sstr.py`.
+against the frozen prototype.
 - **Both directions:** each writes random, text and MPEG-TS captures, and
   both read all of them.
 - **Damage:** 13 kinds, on a capture from each, with the same repairs, losses,
@@ -217,7 +232,8 @@ this crate and nothing else. What the *programs* call out to, when asked:
 ```sh
 make            # the list
 make check      # no external crates, the tests, an offline release build, the crosscheck
-make crosscheck # sstr against tools/copal-sstr.py in ../copal, comparison by comparison
+make crosscheck # sstr against the frozen prototype, comparison by comparison
+make outer-check # version 1's outer code: two lost records of a group, rebuilt
 make ytq-crosscheck  # the Rust ytq against the Python ytq of tests/reference
 make run ARGS='play cap.sstr --paced'
 make workspace

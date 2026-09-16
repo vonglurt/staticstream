@@ -21,7 +21,13 @@
 
 set -u
 ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
-PROTO=${STATICSTREAM_PROTOTYPE:-$ROOT/../copal/tools/copal-sstr.py}
+# THE PROTOTYPE IS VENDORED, at tests/reference/copal-sstr.py. It used to be
+# reached for in a second checkout, and when that checkout was not there these
+# 44 comparisons skipped and `make check` still exited 0 -- so a clone of this
+# repository alone got a green check that was missing the whole chain back to
+# the specification. $STATICSTREAM_PROTOTYPE still overrides, for running
+# against a copal checkout on purpose.
+PROTO=${STATICSTREAM_PROTOTYPE:-$ROOT/tests/reference/copal-sstr.py}
 SSTR=${SSTR:-$ROOT/target/release/sstr}
 PY="python3 $PROTO"
 
