@@ -74,11 +74,13 @@ chain back to the specification is unbroken.
 |---|---|---|
 | **3a** | the frame and the **Browser**: Miller columns over folders, starting at `ARCHIVE_DIR`; the terminal, the layout, the keys that move | at three window sizes the columns show what `ls` shows, in the same order, with the same selection after the same keys; nothing is drawn outside the frame. **Done**: `make workspace-check`, 16 of 16; commit `d6826e1` |
 | **3b** | the **Inspector**: a capture's header, notes and license, `verify`'s summary, a video's notes, a folder's count | for every file in a fixture folder, what the Inspector shows equals what `sstr verify` and the file's own header say, field for field. **Done**: `make workspace-check`, 23 of 23 -- the capture's pane compared line for line with `sstr verify` over a capture `sstr` itself recorded. `make check` is 316 |
-| 3c | the **Transcript**: `ytq.log` and sstr's own events in one pane, following as they are written | lines appear in the order the log has them, with the same text ytq wrote; a rotated `ytq.log.1` does not lose the line at the seam |
+| **3c** | the **Transcript**: `ytq.log` and sstr's own events in one pane, following as they are written | lines appear in the order the log has them, with the same text ytq wrote; a rotated `ytq.log.1` does not lose the line at the seam. **Done**: `make workspace-check`, 34 of 34 -- the band held against a log a real `ytq` wrote, and followed across the rename `ytq` itself makes past 4 MiB. `make check` is 327 |
 | 3d | **Services**: Play, Paced, Serve, Verify, Export MP4, Open as Text, Armor, Queue — each printed in the Transcript as a command line before it runs | the acceptance test above: every Service equals its own printed command line, run in a shell |
 | 3e | the **Shelf** and the **Queue**: items kept for later, and ytq's queue as one more object to browse, inspect and send Retry or Forget | a queue entry inspected and retried through the Workspace leaves `queue.json` exactly as `ytq` doing the same leaves it |
 
 ## Deviations, written down as they are made
+
+### Steps 3a and 3b
 
 - **ASCII markers, not box art.** The report's screen (V-B) is drawn with box
   characters, and a folder is marked `▸`. The Browser uses `>` for a folder and
@@ -128,6 +130,69 @@ chain back to the specification is unbroken.
   *contains* to something outside the program; nothing outside it anchors how
   a column is *drawn*. So a capture read by eye is part of the step, not a
   courtesy at the end of it.
+
+### Step 3c
+
+- **The band is three rows where there is room, not the report's one.** The
+  report's screen draws the Transcript as a single row, and it is drawn that
+  way because nothing is happening on it: one `done:` line is all there was to
+  say. A download says more, and Smalltalk's Transcript is a pane that
+  scrolls. Three rows is enough to see a line, the one before it and the one
+  after -- which is what makes "in the order the log has them" something a
+  person can read rather than infer. Below 20 rows the band keeps the
+  report's single row; a 12-row terminal is for the Browser.
+- **A line is drawn as `transcript::shown` draws it: the time, then the
+  message.** Here the report is right and the first attempt was wrong. That
+  attempt drew the line exactly as ytq wrote it, arguing that the
+  done-condition says "the same text ytq wrote" and a pane that reformats
+  cannot be held to it. At 50 columns the result was
+  `2026-09-16 08:02:52 [13870] nothing is` -- twelve characters of label,
+  twenty-eight of stamp, ten of message. The report's `10:03:36 done: ...` is
+  the right shape: the date is the same all day and the pid belongs to a file
+  several ytq processes share, not to a pane showing three lines. What is
+  **kept** is still the line as ytq wrote it, so the comparison still has the
+  file to be anchored to; only the drawing is short.
+- **The follower remembers the handle, not the offset.** `ytq.log` is moved to
+  `ytq.log.1` by a plain `std::fs::rename` past `LOG_MAX`, and an offset into
+  a file that no longer wears that name is how the lines at the seam go
+  missing. So every poll drains the descriptor it already holds -- a rename
+  does not move an open file, and the lines written before it are still there
+  to be read -- and only then asks, by device and inode, whether the path is
+  still that file. A different one, or a length below where we are reading,
+  means reopen at nought and drain that too, in the same poll. The seam is
+  not a gap in time.
+- **The seam is checked by a unit test and the rename by the harness**, and
+  neither could do the other's job. The line at the seam is one written to the
+  old file between the last poll and the rename; placing it in that window
+  from a shell is not something a check can be made to do reliably, and
+  `a_rotation_loses_nothing_at_the_seam` in `src/workspace/transcript.rs`
+  places it exactly. What the harness does instead is drive a **real** `ytq`
+  over a **real** 4 MiB log and watch the pane carry on across the rotation
+  `ytq` itself performs -- which is the half that no unit test can claim.
+- **A burst is read in proportion to its bytes, not to their square** -- and
+  this was a defect, found by reading a pane. The first follower appended each
+  block to a buffer and took lines off the front of it, so every line shifted
+  everything behind it. A rotated log's worth is about 70,000 lines and some
+  200 GB of copying: on screen the Workspace simply stopped, mid-poll, with
+  the pane showing whatever it had. `make workspace-check` was green
+  throughout, because nothing in it had yet written a log that big. It now
+  does, and `a_rotated_logs_worth_of_lines_is_read_in_proportion_to_its_bytes`
+  bounds it besides.
+- **The Transcript's first line is the command line that opened the
+  Workspace** -- `sstr-workspace ~/Videos/Archive`. Services (3d) has to hold
+  to "a verb is always something a person could have typed"; starting as the
+  pane means to go on costs nothing and gives the band something true to show
+  on a machine where ytq has never run.
+- **`transcript_rows` and `shown` are each written twice**, once in Rust and
+  once in shell in `tests/workspace-check.sh`, for the reason `elide` is: the
+  comparison IS the agreement between them, so a divergence fails loudly
+  rather than passing quietly.
+- **Each test got its own fixture folder.** Not 3c's work, but 3c's tests are
+  what made it show: every test in `workspace::tests` used one directory named
+  after the process, cargo runs them in parallel, and each ends by removing
+  what it made -- so a test could have its fixture deleted under it by a
+  neighbour that had just finished. It failed about one run in ten, which is
+  the worst rate for a test to fail at.
 
 ## Decisions already made
 

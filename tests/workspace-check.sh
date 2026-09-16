@@ -26,6 +26,9 @@
 #      when it is not there
 #   I  the Inspector (3b): what it shows about a capture is what
 #      `sstr verify` says about it, line for line; a folder shows its count
+#   T  the Transcript (3c): the band holds the lines `ytq` wrote, in the
+#      order ytq.log has them, and goes on holding them across the rename
+#      that rotation is -- driven by a real ytq writing a real 4 MiB log
 #
 # Nothing here touches the real queue, archive folder or terminal: every run
 # has a throwaway HOME and its own private tmux server.
@@ -44,11 +47,15 @@ LC_ALL=C.UTF-8
 export LC_ALL
 WS=${WS:-$ROOT/target/release/sstr-workspace}
 SSTR=${SSTR:-$ROOT/target/release/sstr}
+# The Transcript follows ytq's log, so the other half of that comparison is
+# ytq itself writing it -- not the harness writing something log-shaped.
+YTQ=${YTQ:-$ROOT/target/release/ytq}
 
 skip() { printf '  --      workspace-check skipped: %s\n' "$1"; exit 0; }
 command -v tmux >/dev/null 2>&1 || skip "no tmux"
 [ -x "$WS" ] || { printf 'workspace-check: no %s -- make build\n' "$WS"; exit 2; }
 [ -x "$SSTR" ] || { printf 'workspace-check: no %s -- make build\n' "$SSTR"; exit 2; }
+[ -x "$YTQ" ] || { printf 'workspace-check: no %s -- make build\n' "$YTQ"; exit 2; }
 
 W=$(mktemp -d "${TMPDIR:-/tmp}/sstr-workspace.XXXXXX")
 SOCK="sstr-workspace-$$"
@@ -92,6 +99,11 @@ printf 'the payload of a real capture, recorded for the Inspector to read\n' > "
 "$SSTR" record "$A/capture.sstr" --input "$W/payload.txt" --type text/plain \
     --source 'https://example.invalid/a-page' --license 'not stated' \
     --note 'a capture by the check' >/dev/null 2>&1 || bad "could not record a capture to inspect"
+
+# workspace::transcript_rows, in shell. Written twice on purpose, for the
+# reason elide below is: the comparison IS the agreement between them, so a
+# band that moves without this moving with it fails loudly.
+tr_rows() { if [ "$1" -ge 20 ]; then echo 3; else echo 1; fi; }
 
 # What `ls` shows, in the C locale: one name a line, dot files left out.
 ls_names() { (cd "$1" && ls); }
@@ -139,14 +151,18 @@ keys() { for k in "$@"; do T send-keys -t ws "$k"; sleep 0.15; done; }
 screen() { T capture-pane -p -t ws; }
 stop() { T send-keys -t ws q 2>/dev/null; sleep 0.2; T kill-session -t ws 2>/dev/null; }
 
+# The last row the Miller columns and the Inspector own, 1-based. Below it
+# are the rule, the Transcript's band and the Services line.
+last_col_row() { echo $(( $1 - 2 - $(tr_rows "$1") )); }
+
 # column N WIDTH: the names in column N (1-based) of the screen, one a line.
-# The columns start on row 4 and end four rows from the bottom; each is a
-# third of the window, and the last character of one is its rule.
+# The columns start on row 4 and end above the rule; each is a third of the
+# window, and the last character of one is its rule.
 column() {
     _n=$1; _w=$2; _h=$3
     _cw=$((_w / 3))
     _from=$((_n - 1)); _x0=$((_from * _cw + 1)); _x1=$((_x0 + _cw - 2))
-    screen | sed -n "4,$((_h - 3))p" | cut -c"$_x0-$_x1" \
+    screen | sed -n "4,$(last_col_row "$_h")p" | cut -c"$_x0-$_x1" \
         | sed 's/[ >|]*$//' | grep -v '^$'
 }
 
@@ -155,7 +171,29 @@ column() {
 pane3() {
     _w=$1; _h=$2
     _cw=$(( _w / 3 ))
-    screen | sed -n "4,$(( _h - 3 ))p" | cut -c"$(( 2 * _cw + 1 ))-$_w" | sed 's/ *$//'
+    screen | sed -n "4,$(last_col_row "$_h")p" | cut -c"$(( 2 * _cw + 1 ))-$_w" | sed 's/ *$//'
+}
+
+# band WIDTH HEIGHT: the Transcript's lines, the label and its indent gone.
+# The band is the rows between the lower rule and the Services line, and
+# ' Transcript ' is twelve characters wide.
+band() {
+    _w=$1; _h=$2; _tr=$(tr_rows "$_h")
+    screen | sed -n "$(( _h - _tr )),$(( _h - 1 ))p" | cut -c13- | sed 's/ *$//'
+}
+
+# transcript::shown, in shell: a log line as the band draws it -- the time out
+# of the stamp, and the message. The date and the pid go. This is the second
+# writing of that rule, and the check is what holds the two together.
+shown() {
+    sed 's/^[0-9]\{4\}-[0-9]\{2\}-[0-9]\{2\} \([0-9]\{2\}:[0-9]\{2\}:[0-9]\{2\}\) \[[0-9]\{1,\}\] /\1 /'
+}
+
+# What the band should hold, given the last lines of a log: each as `shown`
+# draws it, cut where the pane ends.
+band_want() {
+    _log=$1; _w=$2; _h=$3; _tr=$(tr_rows "$_h")
+    tail -n "$_tr" "$_log" | shown | cut -c"1-$(( _w - 12 ))" | sed 's/ *$//'
 }
 
 # ---- C: the columns against ls ---------------------------------------------
@@ -331,6 +369,106 @@ if start 110x30; then
 else
     bad "I the Workspace did not draw"
 fi
+
+# ---- T: the Transcript (3c) -------------------------------------------------
+# THE OTHER HALF OF THIS COMPARISON IS ytq. `ytq add --no-run` writes three
+# lines to ytq.log, starts no runner and touches no network, so the pane can
+# be held against a log a real ytq really wrote -- which is the same shape of
+# anchor `ls` is for the Browser and `sstr verify` is for the Inspector.
+LOG="$H/.local/share/ytq/ytq.log"
+ytq_() { env -i HOME="$H" PATH="/usr/bin:/bin" "$YTQ" "$@" >/dev/null 2>&1; }
+
+if start 110x30; then
+    # Nothing has written to ytq.log yet, so the only line is the Workspace's
+    # own -- and it is the command line that opened it, which is the rule
+    # Services will keep in 3d.
+    last=$(band 110 30 | grep -v '^$' | tail -1)
+    case "$last" in
+        *"sstr-workspace ~/Videos/Archive") ok "T the Workspace says the command line that opened it" ;;
+        *) bad "T the opening line is not a command line: $last" ;;
+    esac
+    if [ "$(band 110 30 | grep -c '^')" -eq 3 ]; then
+        ok "T the band is three rows in a tall window"
+    else
+        bad "T the band is $(band 110 30 | grep -c '^') rows, not 3"
+    fi
+    if screen | sed -n "$(( 30 - 1 - 3 ))p" | grep -q '^-\{20,\}$'; then
+        ok "T the rule sits above the band"
+    else
+        bad "T no rule above the band"
+    fi
+
+    ytq_ add --no-run 'https://www.youtube.com/watch?v=jNQXAC9IVRw'
+    sleep 1.5
+    same "T the band holds the lines ytq wrote, in the log's order" \
+        "$(band_want "$LOG" 110 30)" "$(band 110 30)"
+    stop
+else
+    bad "T the Workspace did not draw"
+fi
+
+if start 50x12; then
+    if [ "$(band 50 12 | grep -c '^')" -eq 1 ]; then
+        ok "T the band is one row in a short window"
+    else
+        bad "T the band is $(band 50 12 | grep -c '^') rows in a short window, not 1"
+    fi
+    ytq_ add --no-run 'https://example.invalid/short-window'
+    sleep 1.5
+    same "T a short window holds the newest line ytq wrote" \
+        "$(band_want "$LOG" 50 12)" "$(band 50 12)"
+    stop
+else
+    bad "T the Workspace did not draw in a short window"
+fi
+
+# A ROTATION, DRIVEN BY YTQ'S OWN log(). Past LOG_MAX -- 4 MiB -- the next
+# line ytq writes renames ytq.log to ytq.log.1 and starts again. A follower
+# that remembers only a byte offset goes silent here: its offset is far past
+# the end of the file that now wears the name, so every later read returns
+# nothing and the pane freezes with the last thing it happened to have.
+#
+# WHAT THIS CHECKS IS THAT FOLLOWING SURVIVES THE RENAME. The line written to
+# the old file between the last poll and the rename -- the one at the seam --
+# cannot be placed at that instant from a shell, and is checked instead by
+# a_rotation_loses_nothing_at_the_seam in src/workspace/transcript.rs, which
+# can. The two together are the step's done-condition.
+if start 110x30; then
+    before=$(band 110 30 | tail -1)
+    awk 'BEGIN{for(i=0;i<100000;i++) printf "2026-09-16 08:00:00 [1] padding line %d\n", i}' >> "$LOG"
+    sleep 1.5
+    if [ "$(band 110 30 | tail -1)" != "$before" ]; then
+        ok "T a burst of lines is followed, not slept through"
+    else
+        bad "T the band did not move when the log grew"
+    fi
+    size=$(wc -c < "$LOG")
+    if [ "$size" -gt 4194304 ]; then
+        ok "T the log is past LOG_MAX, so ytq's next line rotates it"
+    else
+        bad "T the log is only $size bytes -- no rotation will happen"
+    fi
+
+    ytq_ add --no-run 'https://example.invalid/after-the-seam'
+    sleep 2
+    if [ -f "$LOG.1" ]; then
+        ok "T ytq rotated its log"
+    else
+        bad "T ytq did not rotate its log"
+    fi
+    same "T the band follows across the rename" \
+        "$(band_want "$LOG" 110 30)" "$(band 110 30)"
+    keys Down
+    if screen | sed -n '1p' | grep -q 'Workspace'; then
+        ok "T the Workspace still answers its keys after a rotation"
+    else
+        bad "T the Workspace stopped answering after a rotation"
+    fi
+    stop
+else
+    bad "T the Workspace did not draw for the rotation"
+fi
+rm -f "$LOG" "$LOG.1"
 
 # ---- S: where it starts ----------------------------------------------------
 if start 80x24; then

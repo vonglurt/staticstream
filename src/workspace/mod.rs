@@ -5,8 +5,8 @@
 //! words: a Browser of folders, a Shelf, an Inspector, a Transcript, and
 //! Services sent to the selection.
 //!
-//! Step 3a drew the frame and the **Browser**; step 3b adds the
-//! **Inspector**. The Transcript (3c), Services (3d) and the Shelf and Queue
+//! Step 3a drew the frame and the **Browser**, step 3b the **Inspector**,
+//! and step 3c the **Transcript**. Services (3d) and the Shelf and Queue
 //! (3e) have their places on the screen and say which step fills them, so the
 //! window is honest about what it does not do yet.
 //!
@@ -32,6 +32,9 @@ use std::time::Duration;
 use crate::ytq::term::{self, cut, ljust, Frame, Key, Keys, Screen, Seg, Style, Term};
 use crate::ytq::{runner, settings};
 
+pub mod transcript;
+pub use transcript::Transcript;
+
 /// The nouns and the one plural of verbs, and where each word comes from.
 pub const VOCABULARY: [(&str, &str, &str); 7] = [
     ("Workspace", "the whole window", "NeXTSTEP's Workspace Manager"),
@@ -50,6 +53,24 @@ const MILLER: usize = 2;
 const PANES: i64 = 3;
 /// The narrowest a column may be before the Browser stops drawing them.
 const MIN_COL: i64 = 8;
+
+/// How many rows the Transcript's band gets in a window `h` rows tall.
+///
+/// **The report draws the Transcript as one row.** It is drawn that way
+/// because nothing is happening on that screen: a single `done:` line is the
+/// whole of what there was to say. A download says a good deal more than
+/// that, and Smalltalk's Transcript is a pane that scrolls, so the band is
+/// three rows where there is room for them -- enough to see a line, the one
+/// before it and the one after, which is what makes "in the order the log has
+/// them" something a person can read rather than infer. A short window keeps
+/// the report's single row: the Browser is what a 12-row terminal is for.
+pub fn transcript_rows(h: i64) -> i64 {
+    if h >= 20 {
+        3
+    } else {
+        1
+    }
+}
 
 const USAGE: &str = "\
 sstr-workspace -- the Workspace: a Browser over folders of streams
@@ -240,7 +261,7 @@ fn scroll(col: &mut Column, rows: i64) {
 
 /// One screen. The rows the Browser owns are drawn column by column, so a row
 /// carries a piece from each -- which is why a row holds several pieces.
-pub fn frame_of(b: &Browser, (h, w): (i64, i64), colors: bool, home: &Path, note: &str) -> Frame {
+pub fn frame_of(b: &Browser, (h, w): (i64, i64), colors: bool, home: &Path, t: &Transcript) -> Frame {
     let mut f = Frame::new(h.max(0) as usize);
     let color = |c: u8| colors.then_some(c);
     let dim = Style { dim: true, ..Style::default() };
@@ -250,8 +271,10 @@ pub fn frame_of(b: &Browser, (h, w): (i64, i64), colors: bool, home: &Path, note
     f.put(1, 0, &cut(" Shelf: nothing picked yet (3e)", w), dim);
     f.put(2, 0, &"-".repeat(w.max(0) as usize), dim);
 
-    // The rows the columns get: everything between the two rules.
-    let (top, bottom) = (3i64, h - 4);
+    // The rows the columns get: everything between the two rules, less the
+    // Transcript's band and the Services line below them.
+    let tr = transcript_rows(h);
+    let (top, bottom) = (3i64, h - 3 - tr);
     let rows = (bottom - top + 1).max(0);
     let cw = w / PANES;
 
@@ -310,9 +333,34 @@ pub fn frame_of(b: &Browser, (h, w): (i64, i64), colors: bool, home: &Path, note
         f.put(top, 0, &cut("(the window is too narrow for the Browser)", w), dim);
     }
 
-    f.put(h - 3, 0, &"-".repeat(w.max(0) as usize), dim);
-    let transcript = if note.is_empty() { "Transcript  (3c)".to_string() } else { format!("Transcript  {note}") };
-    f.put(h - 2, 0, &cut(&format!(" {transcript}"), w), dim);
+    f.put(h - 2 - tr, 0, &"-".repeat(w.max(0) as usize), dim);
+    // The band: the log's last lines, oldest at the top and the newest on the
+    // row above Services, which is the order the log has them. Fewer lines
+    // than rows pads at the top, so the newest line does not move about as
+    // the pane fills. The label sits on the first row, as the report's screen
+    // labels its one row, and the rest are indented under it so a column of
+    // timestamps lines up.
+    //
+    // A LINE IS DRAWN AS `transcript::shown` DRAWS IT: the time, then the
+    // message, where the log has a date, a time and a pid. The report's
+    // screen writes `10:03:36 done: ...` and it is right to. The full stamp
+    // is 28 characters, and at 50 columns -- with the label -- that leaves
+    // ten for the message and makes the pane a column of clocks. What is
+    // KEPT is still the line as ytq wrote it, so the comparison has something
+    // outside the program to be anchored to.
+    let lines = t.tail(tr.max(0) as usize);
+    let pad = (tr.max(0) as usize).saturating_sub(lines.len());
+    for r in 0..tr {
+        let i = r as usize;
+        let text = if i < pad {
+            String::new()
+        } else {
+            let (time, msg) = transcript::shown(lines[i - pad]);
+            if time.is_empty() { msg.to_string() } else { format!("{time} {msg}") }
+        };
+        let label = if r == 0 { "Transcript " } else { "           " };
+        f.put(h - 1 - tr + r, 0, &cut(&format!(" {label}{text}"), w), dim);
+    }
     f.put(h - 1, 0, &cut(" Services (3d):  up/down move   right open   left back   q leave", w), dim);
     f
 }
@@ -402,7 +450,7 @@ pub fn main(argv: &[String]) -> ExitCode {
         _ => {}
     }
 
-    let Some((_paths, home, s)) = settings::from_env() else {
+    let Some((paths, home, s)) = settings::from_env() else {
         eprintln!("sstr-workspace: no HOME");
         return ExitCode::FAILURE;
     };
@@ -428,6 +476,16 @@ pub fn main(argv: &[String]) -> ExitCode {
     let colors = std::env::var("TERM").map_or(false, |t| !t.is_empty() && t != "dumb");
     let mut b = Browser::open(&root);
 
+    // The Transcript follows ytq's log, and carries sstr's own events beside
+    // it. Its first line is the command line that opened this Workspace --
+    // which is the rule Services will keep in 3d, kept here from the start:
+    // everything in this pane is something a person could have typed.
+    let mut t = Transcript::follow(&paths.log);
+    t.say(&format!("sstr-workspace {}", tilde(&root, &home)));
+    if !note.is_empty() {
+        t.say(&note);
+    }
+
     let _term = match Term::enter() {
         Ok(t) => t,
         Err(e) => {
@@ -440,14 +498,17 @@ pub fn main(argv: &[String]) -> ExitCode {
     let mut last_size = None;
 
     loop {
+        // Before the frame is built, so a line written while the last one was
+        // on screen is on this one. Nothing to read costs a single read.
+        t.poll();
         let (h, w) = term::size();
         if last_size.map_or(false, |s| s != (h, w)) {
             screen.invalidate();
         }
         last_size = Some((h, w));
-        let rows = (h as i64 - 4) - 3 + 1;
+        let rows = (h as i64 - 3 - transcript_rows(h as i64)) - 3 + 1;
         scroll(b.last_mut(), rows);
-        let frame = frame_of(&b, (h as i64, w as i64), colors, &home, &note);
+        let frame = frame_of(&b, (h as i64, w as i64), colors, &home, &t);
         let _ = screen.present(&frame, (h, w));
 
         let Some(k) = keys.next(Duration::from_millis(500)) else { continue };
@@ -468,8 +529,21 @@ pub fn main(argv: &[String]) -> ExitCode {
 mod tests {
     use super::*;
 
-    fn fixture() -> PathBuf {
-        let d = std::env::temp_dir().join(format!("sstr-ws-test-{}", std::process::id()));
+    /// A Transcript with no log to follow: the frame tests are about the
+    /// frame, and an empty band is a band all the same.
+    fn quiet() -> Transcript {
+        Transcript::follow(Path::new("/nonexistent/ytq.log"))
+    }
+
+    /// A folder of the test's own.
+    ///
+    /// ONE FOLDER FOR ALL OF THEM WAS A RACE. cargo runs these in parallel
+    /// and each one ends by removing what it made, so a test could have its
+    /// fixture deleted from under it by a test that had just finished --
+    /// which showed up as `a_column_is_what_ls_would_have_shown` failing
+    /// about one run in ten. The name makes each one distinct.
+    fn fixture(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("sstr-ws-test-{}-{}", std::process::id(), name));
         let _ = std::fs::remove_dir_all(&d);
         std::fs::create_dir_all(d.join("Archive").join("deep")).unwrap();
         std::fs::write(d.join("b.sstr"), b"x").unwrap();
@@ -480,7 +554,7 @@ mod tests {
 
     #[test]
     fn a_column_is_what_ls_would_have_shown() {
-        let d = fixture();
+        let d = fixture("a_column_is_what_ls_would_have_shown");
         let entries = read_dir_sorted(&d);
         let names: Vec<&str> = entries.iter().map(|e| e.name.as_str()).collect();
         // By name, bytewise; the dot file left out; folders not hoisted.
@@ -492,7 +566,7 @@ mod tests {
 
     #[test]
     fn moving_stays_inside_the_folder() {
-        let d = fixture();
+        let d = fixture("moving_stays_inside_the_folder");
         let mut b = Browser::open(&d);
         b.move_by(-1);
         assert_eq!(b.cols[0].sel, 0, "up from the top stays at the top");
@@ -503,7 +577,7 @@ mod tests {
 
     #[test]
     fn a_folder_opens_a_column_and_a_file_does_not() {
-        let d = fixture();
+        let d = fixture("a_folder_opens_a_column_and_a_file_does_not");
         let mut b = Browser::open(&d);
         b.descend();
         assert_eq!(b.cols.len(), 2, "Archive is a folder");
@@ -523,7 +597,7 @@ mod tests {
 
     #[test]
     fn the_inspector_says_what_a_folder_and_a_file_are() {
-        let d = fixture();
+        let d = fixture("the_inspector_says_what_a_folder_and_a_file_are");
         let lines = inspect_lines(Some(&d.join("Archive")));
         assert_eq!(lines[0], "Archive");
         assert_eq!(lines[2], "folder, 1 item");
@@ -566,7 +640,7 @@ mod tests {
 
     #[test]
     fn the_inspectors_heading_keeps_its_extension() {
-        let d = fixture();
+        let d = fixture("the_heading_keeps_its_extension");
         let long = d.join("jawed-Me_at_the_zoo_jNQXAC9IVRw.sstr");
         std::fs::write(&long, b"not really a capture").unwrap();
         let mut b = Browser::open(&d);
@@ -578,7 +652,7 @@ mod tests {
                 break;
             }
         }
-        let f = frame_of(&b, (24, 100), false, &d, "");
+        let f = frame_of(&b, (24, 100), false, &d, &quiet());
         let ins_x = 2 * (100 / 3);
         let heading = f.rows[3]
             .iter()
@@ -600,10 +674,10 @@ mod tests {
 
     #[test]
     fn nothing_is_drawn_outside_the_frame() {
-        let d = fixture();
+        let d = fixture("nothing_is_drawn_outside_the_frame");
         let b = Browser::open(&d);
         for (h, w) in [(24i64, 80i64), (12, 50), (30, 110), (8, 20)] {
-            let f = frame_of(&b, (h, w), true, &d, "");
+            let f = frame_of(&b, (h, w), true, &d, &quiet());
             assert_eq!(f.rows.len(), h as usize, "a frame is exactly the window's rows");
             for row in &f.rows {
                 for (x, text, _) in row {
@@ -617,7 +691,7 @@ mod tests {
 
     #[test]
     fn the_deepest_column_holds_the_selection() {
-        let d = fixture();
+        let d = fixture("the_deepest_column_holds_the_selection");
         let mut b = Browser::open(&d);
         b.descend();
         assert_eq!(b.visible(MILLER).len(), 2);
