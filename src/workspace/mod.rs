@@ -5,10 +5,15 @@
 //! words: a Browser of folders, a Shelf, an Inspector, a Transcript, and
 //! Services sent to the selection.
 //!
-//! Step 3a of `docs/phase-3.md` draws the frame and the **Browser**. The
-//! Inspector (3b), the Transcript (3c), Services (3d) and the Shelf and Queue
+//! Step 3a drew the frame and the **Browser**; step 3b adds the
+//! **Inspector**. The Transcript (3c), Services (3d) and the Shelf and Queue
 //! (3e) have their places on the screen and say which step fills them, so the
 //! window is honest about what it does not do yet.
+//!
+//! **The Inspector does not read a capture itself.** It calls
+//! [`crate::format::reader::inspect`] and draws the lines `sstr verify` would
+//! have printed, so the pane and the command say the same thing in the same
+//! words.
 //!
 //! **The Workspace is a way of looking.** The Browser reads the disk and
 //! nothing else: there is no database, no index and nothing to keep in step
@@ -38,8 +43,11 @@ pub const VOCABULARY: [(&str, &str, &str); 7] = [
     ("Queue", "ytq's queue as one more object to browse and inspect", "ytq"),
 ];
 
-/// How many Miller columns are on screen at once.
-const COLUMNS: usize = 3;
+/// How many Miller columns are on screen at once. The third pane of the
+/// window is the Inspector, as the report's screen has it.
+const MILLER: usize = 2;
+/// The panes across the window: the Miller columns, then the Inspector.
+const PANES: i64 = 3;
 /// The narrowest a column may be before the Browser stops drawing them.
 const MIN_COL: i64 = 8;
 
@@ -50,6 +58,9 @@ sstr-workspace -- the Workspace: a Browser over folders of streams
 
   up down / k j   move          right / l / Enter   open the folder
   left / h        back out      q / Esc             leave
+
+The Inspector shows the selection: for a capture, what `sstr verify` says
+about it, in the same words.
 
 ARCHIVE_DIR comes from ~/.config/copal/media.conf, then ~/.config/ytq/config,
 as ytq reads them. Every Service will also be a command line, shown in the
@@ -175,6 +186,38 @@ impl Browser {
     }
 }
 
+/// A name cut to fit a column, the middle going and the extension staying.
+///
+/// The report's screen has `Trader-The_setup_I...sstr`, not a name cut at its
+/// end, and the reason shows on ytq's own names: at 100 columns
+/// `jawed-Me_at_the_zoo_jNQXAC9IVRw.sstr` and the `.txt` beside it are the
+/// same 29 characters from the left, so a capture and its transcript draw
+/// identically. What tells them apart is the end, so the end is what is kept.
+///
+/// `..` and not the ellipsis the report draws, for the reason the folder
+/// marker is `>`: U+2026 is ambiguous-width, and a column is compared with
+/// `ls` character by character. An ambiguous glyph would have the check
+/// measuring the terminal's font instead of the Browser.
+pub fn elide(name: &str, room: i64) -> String {
+    if room <= 0 {
+        return String::new();
+    }
+    let n = name.chars().count() as i64;
+    if n <= room {
+        return name.to_string();
+    }
+    // The extension is worth keeping when there is one and it is short; a
+    // name that is one long run with a dot in it is not improved by it.
+    if let Some((_, ext)) = name.rsplit_once('.') {
+        let e = ext.chars().count() as i64;
+        if e > 0 && e <= 8 && room > e + 3 {
+            let head: String = name.chars().take((room - 2 - e) as usize).collect();
+            return format!("{head}..{ext}");
+        }
+    }
+    cut(name, room)
+}
+
 /// `~/x` for a path under the home, as ytq's window writes them.
 fn tilde(p: &Path, home: &Path) -> String {
     let (s, h) = (p.to_string_lossy().into_owned(), home.to_string_lossy().into_owned());
@@ -210,21 +253,25 @@ pub fn frame_of(b: &Browser, (h, w): (i64, i64), colors: bool, home: &Path, note
     // The rows the columns get: everything between the two rules.
     let (top, bottom) = (3i64, h - 4);
     let rows = (bottom - top + 1).max(0);
-    let cw = w / COLUMNS as i64;
+    let cw = w / PANES;
 
     if rows > 0 && cw >= MIN_COL {
-        let cols = b.visible(COLUMNS);
+        let cols = b.visible(MILLER);
         let deepest = cols.len().saturating_sub(1);
+        // The Inspector reads the selection once, not once a row.
+        let ins = inspect_lines(b.selection().as_deref());
+        let ins_x = (PANES - 1) * cw;
+        let ins_w = w - ins_x;
         for r in 0..rows {
             let mut segs: Vec<Seg> = Vec::new();
             for (i, col) in cols.iter().enumerate() {
                 let x0 = i as i64 * cw;
-                // The last column on screen runs to the edge; the others end
-                // in a rule, so the columns are told apart without box art.
-                let width = if i + 1 < COLUMNS { cw - 1 } else { w - x0 };
+                // Every column ends in a rule, the last one parting it from
+                // the Inspector, so the panes are told apart without box art.
+                let width = cw - 1;
                 if let Some(e) = col.entries.get(col.top + r as usize) {
                     let marker = if e.is_dir { ">" } else { " " };
-                    let text = format!("{} {}", ljust(&cut(&e.name, width - 3), width - 3), marker);
+                    let text = format!("{} {}", ljust(&elide(&e.name, width - 3), width - 3), marker);
                     let selected = col.top + r as usize == col.sel;
                     let style = if selected && i == deepest {
                         Style { reverse: true, ..Style::default() }
@@ -240,9 +287,22 @@ pub fn frame_of(b: &Browser, (h, w): (i64, i64), colors: bool, home: &Path, note
                 } else if r == 0 && col.entries.is_empty() {
                     segs.push((x0 as usize, ljust(&cut("(empty)", width), width), dim));
                 }
-                if i + 1 < COLUMNS {
-                    segs.push(((x0 + cw - 1) as usize, "|".into(), dim));
-                }
+                segs.push(((x0 + cw - 1) as usize, "|".into(), dim));
+            }
+            // The Inspector: the first line is the name, the rest what the
+            // selection says about itself.
+            if let Some(line) = ins.get(r as usize) {
+                // The first line is the selection's name, so it loses its
+                // middle like a column entry does -- cut at the end, a long
+                // `.sstr` heading reads `.ss`, which is a different extension
+                // as far as a reader can tell. The rest are the lines
+                // `sstr verify` printed: prose, cut where the pane ends.
+                let (style, shown) = if r == 0 {
+                    (Style { bold: true, ..Style::default() }, elide(line, ins_w))
+                } else {
+                    (Style::default(), cut(line, ins_w))
+                };
+                segs.push((ins_x as usize, ljust(&shown, ins_w), style));
             }
             f.puts(top + r, segs);
         }
@@ -255,6 +315,77 @@ pub fn frame_of(b: &Browser, (h, w): (i64, i64), colors: bool, home: &Path, note
     f.put(h - 2, 0, &cut(&format!(" {transcript}"), w), dim);
     f.put(h - 1, 0, &cut(" Services (3d):  up/down move   right open   left back   q leave", w), dim);
     f
+}
+
+/// Thousands separated by commas, as the report's screen writes a size.
+fn thousands(n: u64) -> String {
+    let d = n.to_string();
+    let mut out = String::new();
+    for (i, c) in d.chars().enumerate() {
+        if i > 0 && (d.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// What the Inspector shows for the selection.
+///
+/// A capture's lines are `sstr verify`'s own, through
+/// [`crate::format::reader::inspect`], so the pane and the command cannot
+/// drift. Everything else is what the file says about itself: a folder its
+/// count, a text its first lines, and a download the notes ytq wrote beside
+/// it.
+pub fn inspect_lines(sel: Option<&Path>) -> Vec<String> {
+    let Some(p) = sel else {
+        return vec!["Inspector".into(), String::new(), "(nothing selected)".into()];
+    };
+    let name = p.file_name().map(|s| s.to_string_lossy().into_owned()).unwrap_or_default();
+    let mut v = vec![name, String::new()];
+
+    if p.is_dir() {
+        let n = read_dir_sorted(p).len();
+        v.push(format!("folder, {n} item{}", if n == 1 { "" } else { "s" }));
+        return v;
+    }
+
+    let size = std::fs::metadata(p).map(|m| m.len()).unwrap_or(0);
+    let ext = p.extension().map(|e| e.to_string_lossy().into_owned()).unwrap_or_default();
+
+    if ext == "sstr" {
+        match crate::format::reader::inspect(p) {
+            Ok((status, summary)) => {
+                v.extend(summary.lines().map(String::from));
+                v.push(String::new());
+                v.push(match status {
+                    0 => "verify: everything checked out".into(),
+                    _ => "verify: SOMETHING IS WRONG -- sstr verify says what".to_string(),
+                });
+            }
+            Err(e) => v.push(format!("cannot read it: {e}")),
+        }
+        return v;
+    }
+
+    v.push(format!("{} bytes", thousands(size)));
+    if ext == "txt" {
+        v.push(String::new());
+        if let Ok(text) = std::fs::read_to_string(p) {
+            v.extend(text.lines().take(20).map(String::from));
+        }
+        return v;
+    }
+    // ytq writes Author-Title_ID.txt beside Author-Title_ID.mp4 or .sstr.
+    let notes = p.with_extension("txt");
+    if notes != *p {
+        if let Ok(text) = std::fs::read_to_string(&notes) {
+            v.push(String::new());
+            v.push(format!("notes: {}", notes.file_name().unwrap_or_default().to_string_lossy()));
+            v.extend(text.lines().take(16).map(String::from));
+        }
+    }
+    v
 }
 
 /// The Workspace itself.
@@ -391,6 +522,83 @@ mod tests {
     }
 
     #[test]
+    fn the_inspector_says_what_a_folder_and_a_file_are() {
+        let d = fixture();
+        let lines = inspect_lines(Some(&d.join("Archive")));
+        assert_eq!(lines[0], "Archive");
+        assert_eq!(lines[2], "folder, 1 item");
+
+        let lines = inspect_lines(Some(&d.join("a.txt")));
+        assert_eq!(lines[0], "a.txt");
+        assert_eq!(lines[2], "1 bytes");
+        assert!(lines.contains(&"x".to_string()), "a text shows its first lines");
+
+        assert_eq!(inspect_lines(None)[2], "(nothing selected)");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_long_name_keeps_what_tells_it_apart() {
+        // The case from the screen: the capture and its transcript, at the
+        // room a 100-column window gives a column.
+        let a = "jawed-Me_at_the_zoo_jNQXAC9IVRw.sstr";
+        let b = "jawed-Me_at_the_zoo_jNQXAC9IVRw.txt";
+        assert_eq!(elide(a, 29), "jawed-Me_at_the_zoo_jNQ..sstr");
+        assert_eq!(elide(b, 29), "jawed-Me_at_the_zoo_jNQX..txt");
+        assert_ne!(elide(a, 29), elide(b, 29), "a capture and its transcript must not draw alike");
+        assert_eq!(elide(a, 29).chars().count(), 29);
+        assert_eq!(elide(b, 29).chars().count(), 29);
+
+        // Short enough is left alone.
+        assert_eq!(elide("a.txt", 29), "a.txt");
+        assert_eq!(elide("Zeta-report.sstr", 16), "Zeta-report.sstr");
+        assert_eq!(elide("Zeta-report.sstr", 12), "Zeta-r..sstr");
+
+        // No usable extension, or no room for one: cut the end, as before.
+        assert_eq!(elide("a_name_with_no_extension_at_all", 10), "a_name_wit");
+        assert_eq!(elide("x.averylongextension", 10), "x.averylon");
+        assert_eq!(elide("name.sstr", 6), "name.s");
+        assert_eq!(elide("anything", 0), "");
+
+        // Characters, not bytes.
+        assert_eq!(elide("café-and-more.txt", 12).chars().count(), 12);
+    }
+
+    #[test]
+    fn the_inspectors_heading_keeps_its_extension() {
+        let d = fixture();
+        let long = d.join("jawed-Me_at_the_zoo_jNQXAC9IVRw.sstr");
+        std::fs::write(&long, b"not really a capture").unwrap();
+        let mut b = Browser::open(&d);
+        // Put the selection on the long name.
+        while b.selection().map(|p| p != long).unwrap_or(false) {
+            let before = b.cols[0].sel;
+            b.move_by(1);
+            if b.cols[0].sel == before {
+                break;
+            }
+        }
+        let f = frame_of(&b, (24, 100), false, &d, "");
+        let ins_x = 2 * (100 / 3);
+        let heading = f.rows[3]
+            .iter()
+            .find(|(x, _, _)| *x as i64 == ins_x)
+            .map(|(_, s, _)| s.trim_end().to_string())
+            .unwrap_or_default();
+        assert!(heading.ends_with("sstr"), "the heading keeps its extension, got {heading:?}");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_size_is_written_as_the_report_writes_it() {
+        assert_eq!(thousands(0), "0");
+        assert_eq!(thousands(999), "999");
+        assert_eq!(thousands(1_000), "1,000");
+        assert_eq!(thousands(692_231), "692,231");
+        assert_eq!(thousands(1_234_567), "1,234,567");
+    }
+
+    #[test]
     fn nothing_is_drawn_outside_the_frame() {
         let d = fixture();
         let b = Browser::open(&d);
@@ -412,7 +620,7 @@ mod tests {
         let d = fixture();
         let mut b = Browser::open(&d);
         b.descend();
-        assert_eq!(b.visible(COLUMNS).len(), 2);
+        assert_eq!(b.visible(MILLER).len(), 2);
         assert_eq!(b.selection().unwrap().file_name().unwrap(), "deep");
         let _ = std::fs::remove_dir_all(&d);
     }

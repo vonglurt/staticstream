@@ -772,6 +772,21 @@ impl Drop for TempDir {
 
 /// Read a capture through, as `sstr verify` does: its exit status (0 when
 /// everything checked out), its payload's SHA-256 in hex, and what was found.
+/// What `sstr verify FILE` prints, and the code it would exit with.
+///
+/// The Workspace's Inspector shows a capture by calling this and drawing the
+/// lines it returns, rather than reading the header itself and formatting it
+/// again. `display`, `truthy` and `fingerprint` stay private that way, and the
+/// pane cannot drift from the command: what the Inspector shows about a
+/// capture is what `sstr verify` says about it, in the same words. That is
+/// phase 3's rule one step before Services makes it a command line people see.
+pub fn inspect(path: &Path) -> io::Result<(i32, String)> {
+    let file = std::fs::File::open(path)?;
+    let mut r = Reader::new(Source::new(file, false, Rc::new(RefCell::new(Erasures::new()))), None, Options::default());
+    r.run()?;
+    Ok((r.status(), r.summary()))
+}
+
 pub fn check_file(path: &Path) -> io::Result<(i32, String, Stats)> {
     let file = std::fs::File::open(path)?;
     let mut r = Reader::new(Source::new(file, false, Rc::new(RefCell::new(Erasures::new()))), None, Options::default());

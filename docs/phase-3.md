@@ -72,8 +72,8 @@ chain back to the specification is unbroken.
 
 | Step | Delivers | Done when |
 |---|---|---|
-| **3a** | the frame and the **Browser**: Miller columns over folders, starting at `ARCHIVE_DIR`; the terminal, the layout, the keys that move | at three window sizes the columns show what `ls` shows, in the same order, with the same selection after the same keys; nothing is drawn outside the frame |
-| 3b | the **Inspector**: a capture's header, notes and license, `verify`'s summary, a video's notes, a folder's count | for every file in a fixture folder, what the Inspector shows equals what `sstr verify` and the file's own header say, field for field |
+| **3a** | the frame and the **Browser**: Miller columns over folders, starting at `ARCHIVE_DIR`; the terminal, the layout, the keys that move | at three window sizes the columns show what `ls` shows, in the same order, with the same selection after the same keys; nothing is drawn outside the frame. **Done**: `make workspace-check`, 16 of 16; commit `d6826e1` |
+| **3b** | the **Inspector**: a capture's header, notes and license, `verify`'s summary, a video's notes, a folder's count | for every file in a fixture folder, what the Inspector shows equals what `sstr verify` and the file's own header say, field for field. **Done**: `make workspace-check`, 23 of 23 -- the capture's pane compared line for line with `sstr verify` over a capture `sstr` itself recorded. `make check` is 316 |
 | 3c | the **Transcript**: `ytq.log` and sstr's own events in one pane, following as they are written | lines appear in the order the log has them, with the same text ytq wrote; a rotated `ytq.log.1` does not lose the line at the seam |
 | 3d | **Services**: Play, Paced, Serve, Verify, Export MP4, Open as Text, Armor, Queue — each printed in the Transcript as a command line before it runs | the acceptance test above: every Service equals its own printed command line, run in a shell |
 | 3e | the **Shelf** and the **Queue**: items kept for later, and ytq's queue as one more object to browse, inspect and send Retry or Forget | a queue entry inspected and retried through the Workspace leaves `queue.json` exactly as `ytq` doing the same leaves it |
@@ -94,6 +94,40 @@ chain back to the specification is unbroken.
   `make ytq-window-crosscheck` still agrees on all 133 comparisons.
 - **`cut` and `ljust` moved from `ytq::window` to `ytq::term`.** Both windows
   need them, and they are the terminal's business. Their test moved with them.
+- **A name too long for its column loses its middle, not its end** -- and `..`
+  does the losing, where the report draws an ellipsis. The report is right
+  about the shape: at 100 columns `jawed-Me_at_the_zoo_jNQXAC9IVRw.sstr` and
+  the `.txt` beside it are the same 29 characters from the left, so cutting
+  the end drew a capture and its transcript identically, on exactly the names
+  ytq makes. What tells them apart is the end, so the end is kept:
+  `jawed-Me_at_the_zoo_jNQ..sstr` and `jawed-Me_at_the_zoo_jNQX..txt`. It is
+  `..` and not `…` for the reason the folder marker is `>`: U+2026 is
+  ambiguous-width, and a column is compared with `ls` character by character,
+  so an ambiguous glyph would have the check measuring the terminal's font
+  instead of the Browser.
+  The **Inspector's heading is the same name and loses its middle the same
+  way** -- cut at its end, `jawed-Me_at_the_zoo_jNQXAC9IVRw.sstr` read
+  `...IVRw.ss`, which is a different extension as far as a reader can tell.
+  The lines under the heading are `sstr verify`'s prose, not names, and are
+  cut where the pane ends.
+- **The elide rule is written twice**, once as `workspace::elide` and once in
+  shell in `tests/workspace-check.sh`, which builds what it expects from `ls`.
+  That is duplication on purpose: the comparison IS the agreement between
+  them, so a divergence fails the check loudly instead of passing quietly. It
+  is written down here because it is the kind of thing that otherwise costs
+  someone an hour.
+- **Three checks say `no two entries draw alike`**, one per window size. That
+  is the defect above asserted on the real screen rather than in the drawing
+  code, and the fixture holds the `.sstr` and `.txt` pair that provoked it.
+- **Look at the screen, not only at the check.** Both elision defects were
+  found by capturing a pane with tmux and reading it, while every check was
+  green. That is inherent to the shape of this test rather than bad luck: the
+  harness re-implements `elide` in shell, so Browser-against-harness is a
+  self-consistent comparison, and self-consistency cannot catch both sides
+  being wrong in the same direction. Comparing with `ls` anchors what a column
+  *contains* to something outside the program; nothing outside it anchors how
+  a column is *drawn*. So a capture read by eye is part of the step, not a
+  courtesy at the end of it.
 
 ## Decisions already made
 

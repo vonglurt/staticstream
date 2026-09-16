@@ -24,6 +24,8 @@
 #      wider than the window
 #   S  the starting folder: ARCHIVE_DIR from media.conf, and the fallback
 #      when it is not there
+#   I  the Inspector (3b): what it shows about a capture is what
+#      `sstr verify` says about it, line for line; a folder shows its count
 #
 # Nothing here touches the real queue, archive folder or terminal: every run
 # has a throwaway HOME and its own private tmux server.
@@ -41,10 +43,12 @@ ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 LC_ALL=C.UTF-8
 export LC_ALL
 WS=${WS:-$ROOT/target/release/sstr-workspace}
+SSTR=${SSTR:-$ROOT/target/release/sstr}
 
 skip() { printf '  --      workspace-check skipped: %s\n' "$1"; exit 0; }
 command -v tmux >/dev/null 2>&1 || skip "no tmux"
 [ -x "$WS" ] || { printf 'workspace-check: no %s -- make build\n' "$WS"; exit 2; }
+[ -x "$SSTR" ] || { printf 'workspace-check: no %s -- make build\n' "$SSTR"; exit 2; }
 
 W=$(mktemp -d "${TMPDIR:-/tmp}/sstr-workspace.XXXXXX")
 SOCK="sstr-workspace-$$"
@@ -78,11 +82,42 @@ printf 'ARCHIVE_DIR=%s\n' "$A" > "$H/.config/copal/media.conf"
 for f in "Zeta-report.sstr" "alpha.txt" "beta.sstr" "café.txt"; do
     printf 'x' > "$A/$f"
 done
+printf 'x' > "$A/jawed-Me_at_the_zoo_jNQXAC9IVRw.txt"
+printf 'x' > "$A/jawed-Me_at_the_zoo_jNQXAC9IVRw.sstr"
 printf 'x' > "$A/.hidden"
 printf 'x' > "$A/SharedVM/inside.sstr"
+# A capture the Inspector can be held to: `sstr verify` is the other half of
+# the comparison, so it has to be one sstr actually wrote.
+printf 'the payload of a real capture, recorded for the Inspector to read\n' > "$W/payload.txt"
+"$SSTR" record "$A/capture.sstr" --input "$W/payload.txt" --type text/plain \
+    --source 'https://example.invalid/a-page' --license 'not stated' \
+    --note 'a capture by the check' >/dev/null 2>&1 || bad "could not record a capture to inspect"
 
 # What `ls` shows, in the C locale: one name a line, dot files left out.
 ls_names() { (cd "$1" && ls); }
+
+# A name as the Browser draws it in a column ROOM characters wide: too long,
+# and the middle goes so that the extension stays. This is workspace::elide in
+# shell, and the two have to agree -- that is the point of the comparison.
+# wc -m and cut -c count characters, not bytes, because LC_ALL is C.UTF-8.
+elide() {
+    _s=$1; _room=$2
+    _n=$(printf '%s' "$_s" | wc -m)
+    if [ "$_n" -le "$_room" ]; then printf '%s\n' "$_s"; return; fi
+    _ext=""
+    case "$_s" in *.*) _ext=${_s##*.} ;; esac
+    _el=$(printf '%s' "$_ext" | wc -m)
+    if [ -n "$_ext" ] && [ "$_el" -le 8 ] && [ "$_room" -gt $(( _el + 3 )) ]; then
+        printf '%s..%s\n' "$(printf '%s' "$_s" | cut -c"1-$(( _room - 2 - _el ))")" "$_ext"
+    else
+        printf '%s' "$_s" | cut -c"1-$_room"; printf '\n'
+    fi
+}
+
+# Every name in DIR, as the Browser would draw it ROOM wide.
+ls_elided() {
+    ls_names "$1" | while IFS= read -r _name; do elide "$_name" "$2"; done
+}
 
 # ---- driving the Workspace -------------------------------------------------
 # start SIZE [ARGS...]: a Workspace in a pane of the given size, on the
@@ -115,22 +150,36 @@ column() {
         | sed 's/[ >|]*$//' | grep -v '^$'
 }
 
+# pane3 WIDTH HEIGHT: the Inspector's lines, one a line, trailing blanks gone.
+# It is the last third of the window, past the two Miller columns.
+pane3() {
+    _w=$1; _h=$2
+    _cw=$(( _w / 3 ))
+    screen | sed -n "4,$(( _h - 3 ))p" | cut -c"$(( 2 * _cw + 1 ))-$_w" | sed 's/ *$//'
+}
+
 # ---- C: the columns against ls ---------------------------------------------
 for size in 110x30 80x24 50x12; do
     w=${size%x*}; h=${size#*x}
     if ! start "$size"; then bad "C $size: the Workspace did not draw"; continue; fi
     got=$(column 1 "$w" "$h")
-    # A column is a third of the window, and a name longer than it is cut to
-    # fit -- so what `ls` says is cut the same way before comparing. A column
-    # that is not the last is a third less its rule (cw - 1), and the Browser
-    # gives a name that less its gap and its folder marker (width - 3), so the
-    # room for a name is cw - 4.
+    # A column is a third of the window, and a name longer than it is drawn
+    # elided -- so what `ls` says is elided the same way before comparing. A
+    # column that is not the last is a third less its rule (cw - 1), and the
+    # Browser gives a name that less its gap and its folder marker
+    # (width - 3), so the room for a name is cw - 4.
     room=$(( w / 3 - 4 ))
-    want=$(ls_names "$A" | cut -c"1-$room" | sed 's/ *$//')
+    want=$(ls_elided "$A" "$room")
     # A short window shows fewer rows than the folder has; compare what fits.
     rows=$(printf '%s\n' "$got" | grep -c '^' )
     want_head=$(printf '%s\n' "$want" | head -n "$rows")
     same "C $size: the first column is what ls shows" "$want_head" "$got"
+    dupes=$(printf '%s\n' "$got" | sort | uniq -d)
+    if [ -z "$dupes" ]; then
+        ok "C $size: no two entries draw alike"
+    else
+        bad "C $size: two entries draw alike: $dupes"
+    fi
     stop
 done
 
@@ -198,17 +247,89 @@ if start 110x30; then
     same "K the folder is selected" "SharedVM" "$(selected)"
     keys Right
     got=$(column 2 110 30)
-    want=$(ls_names "$A/SharedVM" | cut -c"1-$(( 110 / 3 - 4 ))" | sed 's/ *$//')
+    want=$(ls_elided "$A/SharedVM" "$(( 110 / 3 - 4 ))")
     same "K opening a folder fills the column to its right" "$want" "$got"
     if screen | sed -n '1p' | grep -q 'SharedVM'; then ok "K the title bar follows the folder"; else bad "K the title bar did not follow"; fi
     keys Left
     got=$(column 1 110 30)
-    want=$(ls_names "$A" | cut -c"1-$(( 110 / 3 - 4 ))" | sed 's/ *$//')
+    want=$(ls_elided "$A" "$(( 110 / 3 - 4 ))")
     rows=$(printf '%s\n' "$got" | grep -c '^')
     same "K backing out returns to the folder above" "$(printf '%s\n' "$want" | head -n "$rows")" "$got"
     stop
 else
     bad "K the Workspace did not draw"
+fi
+
+# ---- I: the Inspector (3b) -------------------------------------------------
+if start 110x30; then
+    selected() {
+        T capture-pane -p -e -t ws | awk -v e="$(printf '\033')" '
+            NR <= 3 { next }
+            {
+                s = $0
+                while (match(s, e "\\[[0-9;]*m")) {
+                    params = substr(s, RSTART + 2, RLENGTH - 3)
+                    rest = substr(s, RSTART + RLENGTH)
+                    rev = 0; dim = 0
+                    n = split(params, p, ";")
+                    for (i = 1; i <= n; i++) {
+                        if (p[i] == "7") rev = 1
+                        if (p[i] == "2") dim = 1
+                    }
+                    if (rev && !dim) {
+                        m = index(rest, e)
+                        print (m ? substr(rest, 1, m - 1) : rest)
+                        exit
+                    }
+                    s = rest
+                }
+            }' | sed 's/[ >|]*$//'
+    }
+    # Walk to a named entry, however the folder happens to be ordered. Down
+    # stops at the last entry rather than wrapping, so this goes back to the
+    # top first -- otherwise a second call, for a name above the one already
+    # selected, would walk into its own bound and never find it.
+    select_name() {
+        _want=$1; _i=0
+        while [ "$_i" -lt 10 ]; do keys Up; _i=$(( _i + 1 )); done
+        _i=0
+        while [ "$(selected)" != "$_want" ]; do
+            keys Down; _i=$(( _i + 1 ))
+            [ "$_i" -gt 20 ] && return 1
+        done
+        return 0
+    }
+
+    if select_name "capture.sstr"; then
+        # The Inspector's first line is the name, then a blank, then what
+        # `sstr verify` prints -- cut to the pane, which is a third of 110.
+        room=$(( 110 - 2 * (110 / 3) ))
+        got=$(pane3 110 30 | sed -n '3,12p')
+        want=$("$SSTR" verify "$A/capture.sstr" | head -10 | cut -c"1-$room" | sed 's/ *$//')
+        same "I a capture is what sstr verify says about it" "$want" "$got"
+        first=$(pane3 110 30 | sed -n '1p')
+        same "I the Inspector names the selection" "capture.sstr" "$first"
+        if pane3 110 30 | grep -q 'verify: everything checked out'; then
+            ok "I a good capture is said to have checked out"
+        else
+            bad "I nothing said about the capture verifying"
+        fi
+    else
+        bad "I could not select the capture"
+    fi
+
+    if select_name "Notes"; then
+        if pane3 110 30 | grep -q '^folder, 0 items$'; then
+            ok "I a folder shows its count"
+        else
+            bad "I a folder did not show its count: $(pane3 110 30 | sed -n '3p')"
+        fi
+    else
+        bad "I could not select the folder"
+    fi
+    stop
+else
+    bad "I the Workspace did not draw"
 fi
 
 # ---- S: where it starts ----------------------------------------------------
