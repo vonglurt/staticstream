@@ -89,7 +89,7 @@ because a parity record can be the first thing a reader sees after a resync.
 |---|---|---|
 | **4a** | **version 1's outer code**: P+Q written and read, version 0 still written and read | a group with two records missing rebuilds both; the same capture at version 0 rebuilds neither; every phase-1 comparison still agrees. **Done**: `make outer-check`, 7 of 7 -- on one 200,000-byte capture with records 2 and 4 wiped, version 0 exits 1 with *2 data records lost* and version 1 exits 0 with *2 records rebuilt from parity* and a byte-identical payload. `make check` is 363 |
 | **4b** | **the damage battery at version 1**: the Static Stream report's thirteen kinds of damage, re-run against version 1, and the redundancy figure remeasured | the battery passes at version 1 and the overhead is the measured number, not the designed one. **Done**: `make outer-check`, 23 of 23. Version 1 recovers two payloads version 0 loses and loses none that version 0 keeps; the second row measures 1.0643 of version 0 against a designed 1.0588. `make check` is 379 |
-| 4c | **`make dist`**: what this machine can build, and an exact account of what it cannot | `dist/` holds the native target's three binaries and a manifest; a missing target or linker is named, with the command that supplies it, rather than a backtrace from inside cargo |
+| **4c** | **`make dist`**: what this machine can build, and an exact account of what it cannot | `dist/` holds the native target's three binaries and a manifest; a missing target or linker is named, with the command that supplies it, rather than a backtrace from inside cargo. **Done here as far as this machine goes**: one target built, three accounted for, manifest written. **The report's own done-condition — *binaries run on the Pi 2B and the x86_64 VM* — is not met and cannot be met here**; it needs those two machines |
 | 4d | **the report, revised for phase 4** | V-E, V-F and the phase table say what was built and what was measured |
 
 ## Deviations, written down as they are made
@@ -171,6 +171,47 @@ because a parity record can be the first thing a reader sees after a resync.
   worth saying in the format's own report: the second row doubles the parity
   blob, and on a stream of four records that is four records' worth of
   padding, not a sixteenth.
+
+### Step 4c
+
+- **THE NATIVE TARGET IS NOT SPELLED THE WAY THE REPORT SPELLS IT.** V-E names
+  `aarch64-unknown-linux-musl`; Alpine's rustc calls this same machine
+  `aarch64-alpine-linux-musl`. They are one target with two names, and asking
+  cargo for the first on a machine that IS the second sends it looking for a
+  standard library that is not installed — to cross-compile to where it
+  already is. So the native build is plain `cargo build --release`, labelled
+  with rustc's own host triple, and the cross set is V-E's list less whichever
+  of them this machine turns out to be. `dist.sh` compares them with
+  `-alpine-` rewritten to `-unknown-`, and says *this machine, built above as
+  …* rather than skipping in silence.
+- **`make dist` always builds what it can.** The Makefile is the front door
+  and it works with nothing but cargo, so `make dist` on any Copal machine
+  produces that machine's three binaries and a manifest, then names each
+  target it could not build **and the one command that supplies what is
+  missing**. A release tool that refuses the part it can do because it cannot
+  do the rest is a tool people stop running.
+- **cargo-make is gone, and `Makefile.toml` with it.** V-G proposed it for the
+  release matrix. The matrix turned out to be three `cargo zigbuild` lines and
+  a loop, and requiring a tool in order to produce the binaries for the machine
+  you are standing on is backwards — especially a tool that is one more thing
+  to install before anything at all can be built. `tools/dist.sh` does the
+  whole of it in shell, which is what the rest of this project's checks are
+  written in. *This is a deviation from V-G and wants the report's agreement
+  in 4d.*
+- **The manifest carries no timestamp.** A manifest that changes when nothing
+  changed cannot be compared with the last one. It carries the crate version,
+  the commit, and each binary's size and SHA-256 — and says when the tree was
+  dirty, because a binary built from uncommitted work should say so.
+- **`make dist` is gated on `make check`**, as `package` and `publish` are:
+  these are the artifacts that leave the machine. `sh tools/dist.sh` is the
+  ungated way, for working on the script itself.
+- **What could not be checked here, stated plainly.** There is no rustup, no
+  cargo-make and no cargo-zigbuild on this guest; `zig` is packaged and
+  installed. Alpine does package `rustup` (1.29.0) — `make tools` said
+  otherwise until it was checked rather than asserted. The three cross
+  targets were therefore not built, and no binary has been run on a Pi 2B or
+  an x86_64 VM. The path this machine *did* exercise is the one that matters
+  most for everyone else: the one where the tools are missing.
 
 ## Decisions already made
 

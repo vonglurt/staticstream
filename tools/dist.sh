@@ -1,0 +1,161 @@
+#!/bin/sh
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Paul Richeson
+#
+# dist.sh -- make dist: the release binaries, for this machine and for the
+# other targets of V-E when the tools for them are here. Step 4c of
+# docs/phase-4.md.
+#
+# IT ALWAYS BUILDS WHAT IT CAN. The Makefile is the front door and it works
+# with nothing but cargo, so `make dist` on any Copal machine produces that
+# machine's three binaries and a manifest -- and then says, exactly, which of
+# the other targets it could not build and the one command that would supply
+# what is missing. A release tool that refuses to do the part it can do
+# because it cannot do the rest is a tool people stop running.
+#
+# THE NATIVE TARGET IS NOT SPELLED THE WAY THE REPORT SPELLS IT. V-E names
+# aarch64-unknown-linux-musl; Alpine's rustc calls this same machine
+# aarch64-alpine-linux-musl. They are one target with two names, and asking
+# cargo for the first on a machine that IS the second sends it looking for a
+# standard library that is not installed -- to cross-compile to where it
+# already is. So the native build is plain `cargo build --release`, labelled
+# with rustc's own host triple, and the cross set is V-E's list less whichever
+# of them this machine turns out to be.
+
+set -u
+ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+CARGO=${CARGO:-cargo}
+DIST=${DIST:-$ROOT/dist}
+BINS="sstr ytq sstr-workspace"
+
+RED=''; OFF=''
+if [ -t 1 ]; then RED=$(printf '\033[31m'); OFF=$(printf '\033[0m'); fi
+
+host=$($CARGO --version >/dev/null 2>&1 && rustc -vV | sed -n 's/^host: //p')
+[ -n "$host" ] || { printf '%serror:%s no rustc -- nothing can be built\n' "$RED" "$OFF"; exit 1; }
+
+# V-E's targets. The Mac builds natively there, with Rust from Homebrew as
+# ascitty's Makefile expects, so it is not in the cross set; Windows is
+# optional and is listed so that its absence is a decision rather than an
+# oversight.
+CROSS="aarch64-unknown-linux-musl armv7-unknown-linux-musleabihf x86_64-unknown-linux-musl"
+
+# Is this host the same machine as TARGET under another name? Alpine says
+# aarch64-alpine-linux-musl where the report says aarch64-unknown-linux-musl.
+same_machine() {
+    _a=$(printf '%s' "$host" | sed 's/-alpine-/-unknown-/')
+    [ "$_a" = "$1" ]
+}
+
+rm -rf "$DIST"
+mkdir -p "$DIST"
+built=""
+skipped=""
+
+# ---- this machine ----------------------------------------------------------
+printf '  ..      %s (native)\n' "$host"
+if $CARGO build --release --locked >/dev/null 2>&1; then
+    mkdir -p "$DIST/$host"
+    ok=yes
+    for b in $BINS; do
+        if [ -f "$ROOT/target/release/$b" ]; then
+            cp "$ROOT/target/release/$b" "$DIST/$host/$b"
+        else
+            ok=no
+        fi
+    done
+    if [ "$ok" = yes ]; then
+        built="$built $host"
+        printf '  ok      %s: %s\n' "$host" "$BINS"
+    else
+        printf '%serror:%s %s built but a binary is missing\n' "$RED" "$OFF" "$host"
+    fi
+else
+    printf '%serror:%s %s: the native build failed -- make build to see why\n' "$RED" "$OFF" "$host"
+fi
+
+# ---- the others ------------------------------------------------------------
+# WHAT IS MISSING IS NAMED, WITH THE COMMAND THAT SUPPLIES IT. A backtrace
+# from inside cargo tells someone that a thing went wrong; this tells them
+# what to type.
+have_rustup=no; command -v rustup >/dev/null 2>&1 && have_rustup=yes
+have_zigbuild=no; command -v cargo-zigbuild >/dev/null 2>&1 && have_zigbuild=yes
+have_zig=no; command -v zig >/dev/null 2>&1 && have_zig=yes
+
+for t in $CROSS; do
+    if same_machine "$t"; then
+        printf '  --      %s: this machine, built above as %s\n' "$t" "$host"
+        continue
+    fi
+    why=""
+    if [ "$have_rustup" = no ]; then
+        why="no rustup, so no standard library for it: apk add rustup && rustup-init, then rustup target add $t"
+    elif ! rustup target list --installed 2>/dev/null | grep -qx "$t"; then
+        why="its standard library is not installed: rustup target add $t"
+    elif [ "$have_zigbuild" = no ]; then
+        if [ "$have_zig" = yes ]; then
+            why="no cargo-zigbuild, though zig is here: cargo install cargo-zigbuild"
+        else
+            why="no linker for it: apk add zig && cargo install cargo-zigbuild"
+        fi
+    fi
+    if [ -n "$why" ]; then
+        skipped="$skipped$t|$why
+"
+        printf '  --      %s: %s\n' "$t" "$why"
+        continue
+    fi
+    printf '  ..      %s (cargo zigbuild)\n' "$t"
+    if cargo zigbuild --release --locked --target "$t" >/dev/null 2>&1; then
+        mkdir -p "$DIST/$t"
+        for b in $BINS; do cp "$ROOT/target/$t/release/$b" "$DIST/$t/$b"; done
+        built="$built $t"
+        printf '  ok      %s: %s\n' "$t" "$BINS"
+    else
+        skipped="$skipped$t|the build failed: cargo zigbuild --release --target $t
+"
+        printf '%serror:%s %s: the build failed\n' "$RED" "$OFF" "$t"
+    fi
+done
+
+# ---- the manifest ----------------------------------------------------------
+# NO TIMESTAMP. A manifest that changes when nothing changed cannot be
+# compared with the last one, and the commit says when far better than a clock
+# does.
+version=$(sed -n 's/^version = "\(.*\)"/\1/p' "$ROOT/Cargo.toml" | head -1)
+commit=$(git -C "$ROOT" rev-parse HEAD 2>/dev/null || echo "not a git checkout")
+dirty=""
+git -C "$ROOT" diff --quiet 2>/dev/null || dirty="  (with uncommitted changes)"
+{
+    printf 'staticstream %s\n' "$version"
+    printf 'commit %s%s\n' "$commit" "$dirty"
+    printf 'format  version 0 written by default, version 1 with --format 1\n'
+    printf '\n'
+    for t in $built; do
+        printf '%s\n' "$t"
+        for b in $BINS; do
+            f="$DIST/$t/$b"
+            [ -f "$f" ] || continue
+            printf '  %-16s %10s  %s\n' "$b" "$(wc -c < "$f")" "$(sha256sum "$f" 2>/dev/null | cut -c1-64)"
+        done
+        printf '\n'
+    done
+    if [ -n "$skipped" ]; then
+        printf 'not built here\n'
+        printf '%s' "$skipped" | while IFS='|' read -r t why; do
+            [ -n "$t" ] || continue
+            printf '  %-32s %s\n' "$t" "$why"
+        done
+        printf '\n'
+    fi
+    printf 'aarch64-apple-darwin builds natively on the Mac: make, with Rust from Homebrew.\n'
+    printf 'x86_64-pc-windows-gnu is optional and is not in this matrix.\n'
+} > "$DIST/MANIFEST"
+
+n=0
+for t in $built; do n=$((n + 1)); done
+if [ "$n" -eq 0 ]; then
+    printf '%serror:%s nothing was built\n' "$RED" "$OFF"
+    exit 1
+fi
+printf '  ok      dist: %s target(s) in %s, and %s\n' "$n" "$DIST" "$DIST/MANIFEST"

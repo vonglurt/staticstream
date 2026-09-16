@@ -114,13 +114,19 @@ workspace-check: ## the Workspace's Browser in tmux: the columns against ls, the
 install: ## sstr, ytq and sstr-workspace into ~/.local/bin (ROOT=DIR for DIR/bin)
 	$(CARGO) install --locked --offline --root $(ROOT) --path .
 
-tools: ## cargo-make and cargo-zigbuild, for make dist: apk on Alpine, else cargo install
-	@if command -v apk >/dev/null 2>&1; then doas apk add cargo-make cargo-zigbuild; \
-	 else $(CARGO) install --locked cargo-make cargo-zigbuild; fi
+tools: ## what `make dist` needs for the targets that are not this machine
+	@printf 'make dist builds THIS machine with nothing but cargo. The other\n'
+	@printf 'targets of V-E need two things, and dist.sh names whichever is\n'
+	@printf 'missing when you run it:\n\n'
+	@printf '  a standard library for each  rustup target add aarch64-unknown-linux-musl \\\n'
+	@printf '                                 armv7-unknown-linux-musleabihf x86_64-unknown-linux-musl\n'
+	@printf '  a linker                     apk add zig && cargo install cargo-zigbuild\n\n'
+	@printf "Alpine packages both, and its own rust ships only this target's\n"
+	@printf 'standard library -- which is why a cross build wants rustup at all.\n'
+	@if command -v apk >/dev/null 2>&1; then printf '\nOn Alpine:  doas apk add rustup zig && rustup-init\n'; fi
 
-dist: ## release binaries for each target in Makefile.toml, into dist/
-	@command -v cargo-make >/dev/null 2>&1 || { printf '$(RED)error:$(OFF) no cargo-make -- make tools\n'; exit 1; }
-	$(CARGO) make dist
+dist: check ## release binaries for this machine and the targets of V-E, into dist/
+	@sh tools/dist.sh
 
 # ---- crates.io ------------------------------------------------------------
 #
