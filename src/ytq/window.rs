@@ -26,7 +26,7 @@ use crate::ytq::live::{live_view, number};
 use crate::ytq::log::{log, Mode};
 use crate::ytq::queue::{self, status, text, title_or_url, RunLock};
 use crate::ytq::runner::{self, brave_ready, run_timeout, Ran, Runner};
-use crate::ytq::term::{self, Frame, Key, Keys, Screen, Style, Term};
+use crate::ytq::term::{self, cut, ljust, Frame, Key, Keys, Screen, Style, Term};
 use crate::ytq::urls::{as_url, py_strip, short};
 use crate::ytq::{sys, HISTORY, ORDER};
 
@@ -49,21 +49,6 @@ fn mark(st: &str) -> &'static str {
         "failed" => "x",
         "rejected" => "-",
         _ => " ",
-    }
-}
-
-/// Python's `s[:n]`, for the n >= 0 the window asks for.
-fn cut(s: &str, n: i64) -> String {
-    s.chars().take(n.max(0) as usize).collect()
-}
-
-/// Python's `s.ljust(n)`.
-fn ljust(s: &str, n: i64) -> String {
-    let len = s.chars().count() as i64;
-    if len >= n {
-        s.to_string()
-    } else {
-        format!("{s}{}", " ".repeat((n - len) as usize))
     }
 }
 
@@ -488,14 +473,6 @@ fn prompt(keys: &Keys, screen: &mut Screen, (h, w): (i64, i64), label: &str) -> 
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn cut_and_ljust_count_characters_as_python_does() {
-        assert_eq!(cut("Fake Title — café", 12), "Fake Title —");
-        assert_eq!(ljust("é", 3), "é  ");
-        assert_eq!(ljust("long", 2), "long");
-        assert_eq!(format!("{:<13}|", "done"), "done         |");
-    }
 
     #[test]
     fn the_list_goes_by_state_then_by_when_added() {

@@ -85,6 +85,11 @@ pub enum Key {
     Char(char),
     Up,
     Down,
+    /// Left and right arrive from phase 3: the Browser walks columns with
+    /// them. ytq's window ignores them, as it ignored them when they decoded
+    /// as `Other`.
+    Left,
+    Right,
     Delete,
     Enter,
     Backspace,
@@ -184,6 +189,8 @@ pub fn decode(b: &[u8]) -> (Option<Key>, usize) {
             let key = match (b[1], b[end], &b[2..end]) {
                 (_, b'A', _) => Key::Up,
                 (_, b'B', _) => Key::Down,
+                (_, b'C', _) => Key::Right,
+                (_, b'D', _) => Key::Left,
                 (b'[', b'~', b"3") => Key::Delete,
                 _ => Key::Other,
             };
@@ -267,7 +274,17 @@ pub fn printable(s: &str) -> String {
 }
 
 /// A row: its column, its text and its style. None is a blank row.
-pub type Row = Option<(usize, String, Style)>;
+pub type Seg = (usize, String, Style);
+
+/// One row: the pieces written on it, left to right. Empty is a blank row.
+///
+/// This was one piece per row until phase 3. ytq's window never needed two --
+/// every line it draws is one full-width string in one style -- but the
+/// Workspace's Browser puts three Miller columns on a row and reverses the
+/// selection inside one of them, which one style per row cannot say. A row of
+/// exactly one piece is written exactly as it was before, so ytq's screens are
+/// unchanged, cell for cell.
+pub type Row = Vec<Seg>;
 
 /// One screen's worth of rows.
 pub struct Frame {
@@ -276,14 +293,35 @@ pub struct Frame {
 
 impl Frame {
     pub fn new(height: usize) -> Frame {
-        Frame { rows: vec![None; height] }
+        Frame { rows: vec![Vec::new(); height] }
     }
 
     /// curses' addstr, for the one string a row gets: off the screen, nothing.
     pub fn put(&mut self, y: i64, x: usize, text: &str, style: Style) {
+        self.puts(y, vec![(x, text.to_string(), style)]);
+    }
+
+    /// Several pieces on one row, left to right. The caller owns the order and
+    /// the gaps: a piece that overlaps an earlier one simply writes over it.
+    pub fn puts(&mut self, y: i64, segs: Vec<Seg>) {
         if y >= 0 && (y as usize) < self.rows.len() {
-            self.rows[y as usize] = Some((x, text.to_string(), style));
+            self.rows[y as usize] = segs;
         }
+    }
+}
+
+/// Python's `s[:n]`, for the n >= 0 a window asks for.
+pub fn cut(s: &str, n: i64) -> String {
+    s.chars().take(n.max(0) as usize).collect()
+}
+
+/// Python's `s.ljust(n)`.
+pub fn ljust(s: &str, n: i64) -> String {
+    let len = s.chars().count() as i64;
+    if len >= n {
+        s.to_string()
+    } else {
+        format!("{s}{}", " ".repeat((n - len) as usize))
     }
 }
 
@@ -311,7 +349,7 @@ impl Screen {
                 continue;
             }
             out.push_str(&format!("\x1b[{};1H\x1b[0m\x1b[2K", y + 1));
-            if let Some((x, text, style)) = row {
+            for (x, text, style) in row {
                 let mut shown: String = printable(text).chars().take(size.1.saturating_sub(*x)).collect();
                 if !style.reverse {
                     // Blanks that look blank go unwritten, as curses leaves them:
@@ -341,9 +379,17 @@ mod tests {
         assert_eq!(decode(b"j"), (Some(Key::Char('j')), 1));
         assert_eq!(decode(b"J"), (Some(Key::Char('J')), 1));
         assert_eq!(decode(b"\x1b[B"), (Some(Key::Down), 3));
+        assert_eq!(decode(b"\x1b[C"), (Some(Key::Right), 3));
+        assert_eq!(decode(b"\x1b[D"), (Some(Key::Left), 3));
+        assert_eq!(decode(b"\x1bOD"), (Some(Key::Left), 3));
         assert_eq!(decode(b"\x1bOA"), (Some(Key::Up), 3));
         assert_eq!(decode(b"\x1b[3~"), (Some(Key::Delete), 4));
-        assert_eq!(decode(b"\x1b[1;5C"), (Some(Key::Other), 6));
+        // Ctrl+Right is Right, because only the final byte is read and the
+        // parameters are not -- which is how Ctrl+Up has always been Up here.
+        // A sequence whose final byte is none of the four is still Other.
+        assert_eq!(decode(b"\x1b[1;5C"), (Some(Key::Right), 6));
+        assert_eq!(decode(b"\x1b[Z"), (Some(Key::Other), 3));
+        assert_eq!(decode(b"\x1b[5~"), (Some(Key::Other), 4));
         assert_eq!(decode(b"\x1b["), (None, 0));
         assert_eq!(decode(b"\x1b"), (None, 0));
         assert_eq!(decode(b"\x1bq"), (Some(Key::Escape), 1));
@@ -358,6 +404,23 @@ mod tests {
     fn nothing_unprintable_reaches_the_terminal() {
         assert_eq!(printable("a\tb\x1b[31m\x7f"), "a^Ib^[[31m^?");
         assert_eq!(printable("Fake Title — café"), "Fake Title — café");
+    }
+
+    #[test]
+    fn cut_and_ljust_count_characters_as_python_does() {
+        assert_eq!(cut("Fake Title — café", 12), "Fake Title —");
+        assert_eq!(ljust("é", 3), "é  ");
+        assert_eq!(ljust("long", 2), "long");
+        assert_eq!(format!("{:<13}|", "done"), "done         |");
+    }
+
+    #[test]
+    fn a_row_of_one_piece_is_written_as_it_always_was() {
+        // The bar phase 3 must not move: one piece per row renders unchanged.
+        let mut f = Frame::new(2);
+        f.put(0, 3, "hello", Style { bold: true, ..Style::default() });
+        assert_eq!(f.rows[0], vec![(3, "hello".to_string(), Style { bold: true, ..Style::default() })]);
+        assert!(f.rows[1].is_empty());
     }
 
     #[test]

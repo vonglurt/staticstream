@@ -28,7 +28,7 @@ RED = \033[31m
 OFF = \033[0m
 
 .DEFAULT_GOAL := help
-.PHONY: help build run workspace test deps check install tools dist package publish clean
+.PHONY: help build run workspace test deps check workspace-check install tools dist package publish clean
 
 help: ## this list
 	@printf 'staticstream -- make TARGET\n\n'
@@ -67,6 +67,7 @@ check: deps ## what a commit must pass: no external crates, the tests, an offlin
 	@YTQ='$(YTQ_BIN)' sh tests/ytq-runner-crosscheck.sh
 	@YTQ='$(YTQ_BIN)' sh tests/ytq-archive-check.sh
 	@YTQ='$(YTQ_BIN)' sh tests/ytq-window-crosscheck.sh
+	@WS='$(CURDIR)/target/release/sstr-workspace' sh tests/workspace-check.sh
 	@printf '  ok      check passed\n'
 
 crosscheck: ## the Rust sstr against tools/copal-sstr.py in ../copal: both directions, damage, armor
@@ -90,6 +91,12 @@ ytq-archive-check: ## the Rust ytq archiving downloads into Static Stream: OUTPU
 ytq-window-crosscheck: ## the Rust window beside the Python ytq's curses window, in tmux: screens, keys, worker, watcher
 	@$(CARGO) build --release --offline --locked --quiet
 	@VERBOSE=1 sh tests/ytq-window-crosscheck.sh
+
+# Needs tmux; without it it is skipped. Phase 3 has no Python to compare
+# against, so the bar is the report's own: a column is what `ls` would show.
+workspace-check: ## the Workspace's Browser in tmux: the columns against ls, the keys, the frame
+	@$(CARGO) build --release --offline --locked --quiet
+	@VERBOSE=1 sh tests/workspace-check.sh
 
 # ytq is installed from here since step 2e: it does everything the Python one
 # did, and that one is retired from copal-prep.sh. $(ROOT)/bin comes before
