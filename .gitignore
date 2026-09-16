@@ -5,6 +5,13 @@
 # make dist
 /dist/
 
+# Python bytecode. tests/reference/ holds two frozen Python programs, and
+# damage.py imports copal-sstr.py for the record layout -- so running the
+# checks leaves a cache beside it. Nothing here was ignored before vendoring,
+# because nothing here was imported before vendoring.
+__pycache__/
+*.pyc
+
 # macOS metadata. A tree reached through the UTM share gets a ._NAME beside
 # every NAME the Mac copies onto it; they are the host's, not the project's.
 ._*
