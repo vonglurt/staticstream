@@ -12,7 +12,7 @@
 
 use std::collections::BTreeMap;
 use std::fs;
-use std::io::{self, BufRead, BufReader, IsTerminal, Read};
+use std::io::{self, BufRead, BufReader, IsTerminal, Read, Write};
 use std::os::unix::process::{CommandExt, ExitStatusExt};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
@@ -27,7 +27,7 @@ use crate::format::{reader, writer};
 use crate::ytq::live::{compact, describe, fmt_secs, fmt_size, na, number, py_str, size_of, splitext, stage, stream_of, truthy, PROGRESS_KEYS};
 use crate::ytq::log::{log, say, splitlines, Mode};
 use crate::ytq::queue::{self, status, text, title_or_url, RunLock};
-use crate::ytq::settings::{DEFAULT_FORMAT, DEFAULT_SUBS};
+use crate::ytq::settings::{DEFAULT_COMMENTS, DEFAULT_FORMAT, DEFAULT_SUBS};
 use crate::ytq::urls::{first_id, py_strip, short};
 use crate::ytq::{sys, textwrap, Paths, DOWNLOADABLE, PENDING};
 
@@ -148,6 +148,17 @@ pub fn archive_dir_of(s: &BTreeMap<String, String>) -> String {
 /// The key captures are signed with: SSTR_KEY, or ~/.ssh/id_ed25519 when it
 /// exists and SSTR_KEY is not set at all. `SSTR_KEY=` with nothing after it
 /// means unsigned.
+/// How many comments a download may take: `COMMENTS` where it is set, the
+/// default where it is not, and none at all where it is set to nothing --
+/// `SUBS`'s shape, including empty-disables.
+pub fn comments_of(s: &BTreeMap<String, String>) -> String {
+    match s.get("COMMENTS") {
+        Some(c) if c.trim().is_empty() => String::new(),
+        Some(c) => c.trim().to_string(),
+        None => DEFAULT_COMMENTS.to_string(),
+    }
+}
+
 pub fn sstr_key_of(s: &BTreeMap<String, String>, home: &Path) -> Option<PathBuf> {
     match s.get("SSTR_KEY") {
         Some(k) if k.trim().is_empty() => None,
@@ -172,7 +183,9 @@ pub fn content_type(path: &str) -> &'static str {
 
 /// What yt-dlp prints after the move when a capture will be made: the fields
 /// its header carries.
-pub const NOTES_PRINT: &str = "after_move:NOTES %(.{webpage_url,license,title,uploader,channel})j";
+pub const NOTES_PRINT: &str =
+    "after_move:NOTES %(.{webpage_url,license,title,uploader,channel,timestamp,upload_date,description,\
+     view_count,like_count,repost_count,comment_count})j";
 
 fn file_sha256(path: &str) -> io::Result<String> {
     let mut f = fs::File::open(path)?;
@@ -546,7 +559,7 @@ impl Runner {
                     sampled = now;
                     self.log(&format!("{tag}: {}, {}, {}", compact(&live), stream_of(&live), size_of(&live)));
                 }
-            } else if let Some(n) = line.strip_prefix("NOTES ").filter(|_| output_of(&self.s) != "mp4") {
+            } else if let Some(n) = line.strip_prefix("NOTES ") {
                 if let Ok(v) = json::parse(n) {
                     notes = v;
                 }
@@ -652,6 +665,10 @@ impl Runner {
             }
             let mut also = "";
             let subs = self.setting("SUBS");
+            // Two jobs, not one. Fetching the captions needs a YouTube video and
+            // a SUBS list; writing the notes needs neither, is owed to every
+            // download, and costs no second yt-dlp run at all -- the metadata is
+            // already in hand from the run that has just finished.
             if !fname.is_empty() && !subs.is_empty() && first_id(&url).is_some() {
                 live.set("phase", Value::str("fetching the transcript"));
                 live.set("since", Value::Num(sys::now()));
@@ -671,9 +688,51 @@ impl Runner {
                         }
                     }
                 }
+            } else if !fname.is_empty() {
+                live.set("phase", Value::str("writing the notes"));
+                live.set("since", Value::Num(sys::now()));
+                live.set("last", Value::str(""));
+                live.set("dest", Value::str(format!("{stem}.txt")));
+                if self.update(&url, vec![("progress", Value::str("notes")), ("live", live.clone())]).is_some() {
+                    match self.notes_file(&url, &stem, &video, &notes) {
+                        Ok(txt) => {
+                            self.log(&format!("{tag}: notes: {txt}"));
+                            also = " + notes";
+                        }
+                        Err(why) => {
+                            self.log(&format!("{tag}: notes: none -- {why}"));
+                            also = " (no notes)";
+                        }
+                    }
+                }
+            }
+            // The discussion, on a rung of its own. A video that simply has no
+            // comments is not a failure and says nothing in the done line; only a
+            // fetch that broke earns "(no discussion)".
+            let mut talk = String::new();
+            let cap = comments_of(&self.s);
+            if !fname.is_empty() && !cap.is_empty() && first_id(&url).is_some() {
+                live.set("phase", Value::str("fetching the discussion"));
+                live.set("since", Value::Num(sys::now()));
+                live.set("last", Value::str(""));
+                live.set("dest", Value::str(format!("{stem}.txt")));
+                if self.update(&url, vec![("progress", Value::str("discussion")), ("live", live.clone())]).is_some() {
+                    let ccmd = if with_cookies { brave_cmd(&self.s) } else { vec!["yt-dlp".into()] };
+                    match self.discussion_file(&url, &stem, &video, &notes, &ccmd, &cap) {
+                        Ok(0) => self.log(&format!("{tag}: discussion: none")),
+                        Ok(n) => {
+                            self.log(&format!("{tag}: discussion: {n} comments in {stem}.txt"));
+                            talk = " + discussion".to_string();
+                        }
+                        Err(why) => {
+                            self.log(&format!("{tag}: discussion: none -- {why}"));
+                            talk = " (no discussion)".to_string();
+                        }
+                    }
+                }
             }
             if self.update(&url, vec![("status", Value::str("done")), ("file", Value::str(&kept)), ("progress", Value::str("")), ("error", Value::str("")), ("live", Value::Obj(Vec::new()))]).is_some() {
-                self.say(&format!("done: {}{also}{not_archived}", if kept.is_empty() { title.as_str() } else { basename(&kept) }), false);
+                self.say(&format!("done: {}{also}{talk}{not_archived}", if kept.is_empty() { title.as_str() } else { basename(&kept) }), false);
             }
             return End::Finished;
         }
@@ -703,25 +762,7 @@ impl Runner {
             fs::create_dir_all(dir).map_err(|e| format!("cannot make {}: {e}", dir.display()))?;
         }
         let part = format!("{sstr}.part");
-        let pick = |k: &str| notes.get(k).filter(|v| truthy(Some(v))).map(py_str);
-        let mut meta = Value::obj(vec![
-            ("created", Value::str(sys::strftime_local("%Y-%m-%dT%H:%M:%S%z", sys::now()))),
-            ("content_type", Value::str(content_type(file))),
-            ("chunk", Value::num(65536)),
-            ("align", Value::num(1)),
-            ("fec", Value::obj(vec![("inner", Value::str("RS(255,223) GF(2^8)/0x11d, interleaved per record")), ("outer", Value::str("XOR, one per 16 data records"))])),
-            ("checkpoint", Value::obj(vec![("records", Value::num(64)), ("seconds", Value::Num(10.0))])),
-            ("source", Value::str(pick("webpage_url").unwrap_or_else(|| url.to_string()))),
-        ]);
-        if let Some(license) = pick("license") {
-            meta.set("license", Value::str(license));
-        }
-        if let Some(t) = pick("title") {
-            meta.set("note", Value::str(match pick("uploader").or_else(|| pick("channel")) {
-                Some(by) => format!("{t} by {by}"),
-                None => t,
-            }));
-        }
+        let meta = capture_meta(notes, url, file, sys::now());
         let key = sstr_key_of(&self.s, &self.home);
         self.log(&format!(
             "{tag}: archiving {file} into {sstr}, {}",
@@ -911,6 +952,87 @@ impl Runner {
         0
     }
 
+    /// The comments of `url`, and how many the site says there are in all.
+    ///
+    /// **Its own yt-dlp run, deliberately not the transcript's.** A comment fetch
+    /// is the slowest and most rate-limited thing yt-dlp does here; sharing a run
+    /// would mean a 429 on comments cost us captions that were already in hand.
+    /// Every step that can fail alone fails alone.
+    fn fetch_comments(&self, url: &str, cmd: &[String], cap: &str) -> Result<(Vec<Value>, Option<f64>), String> {
+        let mut full: Vec<String> = cmd.to_vec();
+        let ea = format!("youtube:max_comments={cap}");
+        for a in [
+            "--skip-download", "--no-simulate", "--no-playlist", "--no-warnings", "--write-comments",
+            "--extractor-args", &ea,
+            "--print", "COUNT %(comment_count)s",
+            "--print", "TALK %(comments)j",
+            url,
+        ] {
+            full.push(a.to_string());
+        }
+        let tag = short(url);
+        let t0 = sys::now();
+        self.log(&format!("{tag}: fetching the discussion, at most {cap} comments"));
+        self.log(&format!("run: {}", full.iter().map(|c| shlex_quote(c)).collect::<Vec<_>>().join(" ")));
+        let (code, out, err) = match run_timeout(Command::new(&full[0]).args(&full[1..]), 600) {
+            Ran::Done(c, o, e) => (c, o, e),
+            Ran::TimedOut => return Err(format!("Command '{}' timed out after 600 seconds", full[0])),
+            Ran::Failed(e) => return Err(format!("cannot run {}: {}", full[0], e)),
+        };
+        self.log(&format!("{tag}: discussion run exited {code} after {}", fmt_secs(sys::now() - t0)));
+        let errs = splitlines(py_strip(&err));
+        for line in &errs[errs.len().saturating_sub(4)..] {
+            self.log(&format!("{tag}: discussion: yt-dlp: {line}"));
+        }
+        let mut list = Vec::new();
+        let mut total = None;
+        for line in splitlines(&out) {
+            if let Some(n) = line.strip_prefix("COUNT ") {
+                total = n.trim().parse::<f64>().ok();
+            } else if let Some(t) = line.strip_prefix("TALK ") {
+                if let Ok(Value::Arr(v)) = json::parse(t) {
+                    list = v;
+                }
+            }
+        }
+        if list.is_empty() && code != 0 {
+            let last = errs.last().map(|s| s.to_string()).unwrap_or_else(|| format!("yt-dlp exited {code}"));
+            return Err(first_chars(&last, 300));
+        }
+        Ok((list, total))
+    }
+
+    /// Append the Discussion to `{stem}.txt`, or write that file first if the
+    /// captions never got far enough to. Returns how many comments were written.
+    fn discussion_file(&self, url: &str, stem: &str, video: &str, meta: &Value, cmd: &[String], cap: &str) -> Result<usize, String> {
+        let (list, total) = self.fetch_comments(url, cmd, cap)?;
+        if list.is_empty() {
+            return Ok(0);
+        }
+        let body = discussion(&list, total);
+        let path = format!("{stem}.txt");
+        if Path::new(&path).exists() {
+            let mut f = fs::OpenOptions::new().append(true).open(&path).map_err(|e| format!("cannot open {path}: {e}"))?;
+            f.write_all(format!("\n{body}").as_bytes()).map_err(|e| format!("cannot write the discussion: {e}"))?;
+        } else {
+            let head = notes(meta, url, None, Some(video));
+            fs::write(&path, format!("{head}{body}")).map_err(|e| format!("cannot write the discussion: {e}"))?;
+        }
+        Ok(list.len())
+    }
+
+    /// `{stem}.txt` for a download with no captions to ask for: the notes of
+    /// the run that has just finished, and nothing after them.
+    ///
+    /// The transcript's twin, and deliberately the cheap one -- it starts no
+    /// process and makes no request, because `meta` is the NOTES line yt-dlp
+    /// printed after moving the file into place.
+    fn notes_file(&self, url: &str, stem: &str, video: &str, meta: &Value) -> Result<String, String> {
+        let path = format!("{stem}.txt");
+        fs::write(&path, notes(meta, url, None, Some(video))).map_err(|e| format!("cannot write the notes: {e}"))?;
+        Ok(path)
+    }
+
     /// `transcript(url, outtmpl, cmd, video)`: the path of a .txt of url's
     /// captions, named by outtmpl as the video is, or why there is none.
     ///
@@ -924,7 +1046,8 @@ impl Runner {
         for a in [
             "--skip-download", "--no-simulate", "--no-playlist", "--no-warnings", "--write-subs", "--write-auto-subs", "--sub-langs", &subs,
             "--sub-format", "vtt", "--print", "video:STEM %(filename)s",
-            "--print", "video:META %(.{title,uploader,channel,webpage_url,timestamp,upload_date,license,description,subtitles})j",
+            "--print", "video:META %(.{title,uploader,channel,webpage_url,timestamp,upload_date,license,description,subtitles,\
+             view_count,like_count,repost_count,comment_count})j",
             "-o", outtmpl, url,
         ] {
             full.push(a.to_string());
@@ -990,7 +1113,7 @@ impl Runner {
                         .map(|p| basename(&p).to_string())
                 }
             };
-            let body = format!("{}{}\n", notes(&meta, url, &lang, video.as_deref()), text);
+            let body = format!("{}{}\n", notes(&meta, url, Some(&lang), video.as_deref()), text);
             fs::write(format!("{stem}.txt"), body).map_err(|e| format!("cannot write the transcript: {e}"))?;
             let words = text.split_whitespace().count();
             self.log(&format!("{tag}: wrote {stem}.txt: {words} words from the {lang} captions"));
@@ -1023,18 +1146,167 @@ fn siblings(stem: &str, keep: impl Fn(&str, &str) -> bool) -> Vec<String> {
         .collect()
 }
 
+/// The metadata a capture carries about the download inside it.
+///
+/// Pure, and separated from `archive()` so it can be held to fixtures: a
+/// capture outlives the queue, the program and very likely the site, so what
+/// goes in its header is worth checking rather than assuming.
+pub fn capture_meta(notes: &Value, url: &str, file: &str, now: f64) -> Value {
+    let pick = |k: &str| notes.get(k).filter(|v| truthy(Some(v))).map(py_str);
+    let stamp = |t: f64| sys::strftime_local("%Y-%m-%dT%H:%M:%S%z", t);
+    let mut meta = Value::obj(vec![
+        ("created", Value::str(stamp(now))),
+        ("content_type", Value::str(content_type(file))),
+        ("chunk", Value::num(65536)),
+        ("align", Value::num(1)),
+        ("fec", Value::obj(vec![("inner", Value::str("RS(255,223) GF(2^8)/0x11d, interleaved per record")), ("outer", Value::str("XOR, one per 16 data records"))])),
+        ("checkpoint", Value::obj(vec![("records", Value::num(64)), ("seconds", Value::Num(10.0))])),
+        ("source", Value::str(pick("webpage_url").unwrap_or_else(|| url.to_string()))),
+    ]);
+    if let Some(license) = pick("license") {
+        meta.set("license", Value::str(license));
+    }
+    if let Some(t) = pick("title") {
+        meta.set("note", Value::str(match pick("uploader").or_else(|| pick("channel")) {
+            Some(by) => format!("{t} by {by}"),
+            None => t,
+        }));
+    }
+    // When the site said it was published. The .txt has carried this since the
+    // notes did; there is no reason for the capture to be the poorer record.
+    if let Some(Value::Num(t)) = notes.get("timestamp") {
+        meta.set("published", Value::str(stamp(*t)));
+    }
+    // The counts, under the moment they were read -- the same stamp the Stats
+    // block carries, for the same reason. A count is a fact about a moment, and
+    // the capture is the copy most likely to outlive the page it came from, so
+    // it is the copy that most needs to say when the numbers were true.
+    let counts: Vec<(&str, f64)> = [
+        ("views", "view_count"),
+        ("likes", "like_count"),
+        ("reposts", "repost_count"),
+        ("replies", "comment_count"),
+    ]
+    .iter()
+    .filter_map(|(name, key)| match notes.get(key) {
+        Some(Value::Num(n)) => Some((*name, *n)),
+        _ => None,
+    })
+    .collect();
+    if !counts.is_empty() {
+        let mut stats = Value::obj(vec![("read", Value::str(stamp(now)))]);
+        for (k, n) in counts {
+            stats.set(k, Value::Num(n));
+        }
+        meta.set("stats", stats);
+    }
+    meta
+}
+
+/// A comment's field as text, "" when absent or empty.
+fn cfield(c: &Value, k: &str) -> String {
+    c.get(k).filter(|v| truthy(Some(v))).map(py_str).unwrap_or_default()
+}
+
+/// One comment's line: who, when, whether the uploader pinned it, and its likes.
+///
+/// The author's display name AND nothing else would be a poor record -- a name
+/// can be changed afterwards -- so `author_id`, which cannot, is kept beside it
+/// where the two differ.
+fn chead(c: &Value) -> String {
+    let name = cfield(c, "author");
+    let name = name.trim_start_matches('@');
+    let mut bits = vec![format!("@{}", if name.is_empty() { "unknown" } else { name })];
+    let id = cfield(c, "author_id");
+    if !id.is_empty() && id.trim_start_matches('@') != name {
+        bits.push(format!("({id})"));
+    }
+    if let Some(Value::Num(t)) = c.get("timestamp") {
+        bits.push(sys::strftime_local("%Y-%m-%d", *t));
+    }
+    if truthy(c.get("is_pinned")) {
+        bits.push("* pinned".to_string());
+    }
+    if let Some(Value::Num(n)) = c.get("like_count") {
+        if *n > 0.0 {
+            bits.push(format!("{} likes", commas(*n)));
+        }
+    }
+    bits.join("  ")
+}
+
+/// The Discussion section: each comment that answers nobody, then what answers it.
+///
+/// `parent` is `'root'` or the id of the comment being answered, so the thread is
+/// built from the flat list yt-dlp hands over rather than guessed from its order.
+/// **A comment whose parent is not in the list is drawn as a root**, because a cap
+/// can cut a thread in half and the half that was kept is still worth reading.
+pub fn discussion(list: &[Value], total: Option<f64>) -> String {
+    let ids: Vec<String> = list.iter().map(|c| cfield(c, "id")).collect();
+    let shown = list.len() as f64;
+    let count = match total {
+        Some(t) if t > shown => format!("{} of {}", commas(shown), commas(t)),
+        _ => commas(shown),
+    };
+    let mut out = format!("Discussion  ({count})\n");
+    for (i, c) in list.iter().enumerate() {
+        let parent = cfield(c, "parent");
+        if !(parent.is_empty() || parent == "root" || !ids.iter().any(|x| *x == parent)) {
+            continue;
+        }
+        out.push('\n');
+        out.push_str(&format!("  {}\n", chead(c)));
+        for line in textwrap::wrap(&cfield(c, "text"), 74) {
+            out.push_str(&format!("    {line}\n"));
+        }
+        let me = &ids[i];
+        if me.is_empty() {
+            continue;
+        }
+        for r in list.iter().filter(|r| cfield(r, "parent") == *me) {
+            out.push_str(&format!("    |  {}\n", chead(r)));
+            for line in textwrap::wrap(&cfield(r, "text"), 70) {
+                out.push_str(&format!("    |    {line}\n"));
+            }
+        }
+    }
+    out
+}
+
+/// `1234567` as `1,234,567`: a comma every three digits from the right.
+///
+/// No locale and no dependency, and deliberately not abbreviated. An archive
+/// keeps whole numbers: `12k` cannot be un-rounded later, and the width it
+/// saves was never scarce.
+pub fn commas(n: f64) -> String {
+    let whole = format!("{}", n.trunc() as i64);
+    let (sign, digits) = match whole.strip_prefix('-') {
+        Some(d) => ("-", d),
+        None => ("", whole.as_str()),
+    };
+    let mut out = String::with_capacity(digits.len() + digits.len() / 3);
+    for (i, c) in digits.chars().enumerate() {
+        if i > 0 && (digits.len() - i) % 3 == 0 {
+            out.push(',');
+        }
+        out.push(c);
+    }
+    format!("{sign}{out}")
+}
+
 /// `notes(meta, url, lang, video)`: the top of a transcript -- the title; Notes,
 /// with the times in local time and its offset; the description; the heading.
-pub fn notes(meta: &Value, url: &str, lang: &str, video: Option<&str>) -> String {
+pub fn notes(meta: &Value, url: &str, lang: Option<&str>, video: Option<&str>) -> String {
     notes_at(meta, url, lang, video, sys::now())
 }
 
-pub fn notes_at(meta: &Value, url: &str, lang: &str, video: Option<&str>, now: f64) -> String {
+/// `lang` is the caption language when captions were sought, and `None` when
+/// there were none to ask for -- an x.com post, or SUBS turned off. The rows
+/// above Captions are true of every download and are written either way; a
+/// Captions row and a Transcript heading on a file with neither would be a
+/// statement about a step that never ran.
+pub fn notes_at(meta: &Value, url: &str, lang: Option<&str>, video: Option<&str>, now: f64) -> String {
     let when = |t: f64| sys::strftime_local("%Y-%m-%d %H:%M:%S %z", t);
-    // yt-dlp takes the uploader's captions over automatic ones in the same
-    // language, so a language among 'subtitles' is the uploader's.
-    let theirs = matches!(meta.get("subtitles"), Some(Value::Obj(m)) if m.iter().any(|(k, _)| k == lang));
-    let source = if theirs { "written by the uploader" } else { "automatic: YouTube's speech recognition, not verbatim" };
     let pick = |k: &str| meta.get(k).filter(|v| truthy(Some(v))).map(py_str);
     let title = pick("title").unwrap_or_else(|| url.to_string());
     let published = match meta.get("timestamp") {
@@ -1045,7 +1317,7 @@ pub fn notes_at(meta: &Value, url: &str, lang: &str, video: Option<&str>, now: f
             _ => "unknown".into(),
         },
     };
-    let rows = [
+    let mut rows = vec![
         ("Title", title.clone()),
         ("Author", pick("uploader").or_else(|| pick("channel")).unwrap_or_else(|| "unknown".into())),
         ("URL", pick("webpage_url").unwrap_or_else(|| url.to_string())),
@@ -1055,19 +1327,55 @@ pub fn notes_at(meta: &Value, url: &str, lang: &str, video: Option<&str>, now: f
         // Commons license's row on the watch page, and nothing otherwise.
         ("License", pick("license").unwrap_or_else(|| "not stated".into())),
         ("Video", video.filter(|v| !v.is_empty()).unwrap_or("none downloaded").to_string()),
-        ("Captions", format!("{lang}, {source}")),
     ];
+    if let Some(lang) = lang {
+        // yt-dlp takes the uploader's captions over automatic ones in the same
+        // language, so a language among 'subtitles' is the uploader's.
+        let theirs = matches!(meta.get("subtitles"), Some(Value::Obj(m)) if m.iter().any(|(k, _)| k == lang));
+        let source = if theirs { "written by the uploader" } else { "automatic: YouTube's speech recognition, not verbatim" };
+        rows.push(("Captions", format!("{lang}, {source}")));
+    }
     let mut out = format!("{title}\n\nNotes\n");
     for (k, v) in rows {
         out.push_str(&format!("  {:<11} {}\n", format!("{k}:"), v));
     }
     out.push('\n');
+    // Counts are facts about a MOMENT, not about the recording. Every row above
+    // is a property of the thing and reads the same tomorrow; views and likes
+    // are different the second after they are read. So the block carries its own
+    // reading time rather than leaning on Downloaded -- two rows that are
+    // usually equal cost less than one row that is sometimes a lie. A stamped
+    // count is a record; an unstamped one is a rumour.
+    //
+    // A row appears only where the site gave a number, so a site with no reposts
+    // says nothing about reposts rather than claiming nought.
+    let counts: Vec<(&str, String)> = [
+        ("Views", "view_count"),
+        ("Likes", "like_count"),
+        ("Reposts", "repost_count"),
+        ("Replies", "comment_count"),
+    ]
+    .iter()
+    .filter_map(|(label, key)| match meta.get(key) {
+        Some(Value::Num(n)) => Some((*label, commas(*n))),
+        _ => None,
+    })
+    .collect();
+    if !counts.is_empty() {
+        out.push_str(&format!("Stats  (read {})\n", when(now)));
+        for (k, v) in counts {
+            out.push_str(&format!("  {:<11} {}\n", format!("{k}:"), v));
+        }
+        out.push('\n');
+    }
     let desc = meta.get("description").map(py_str).unwrap_or_default();
     let desc = py_strip(if truthy(meta.get("description")) { &desc } else { "" });
     if !desc.is_empty() {
         out.push_str(&format!("Description\n{desc}\n\n"));
     }
-    out.push_str("Transcript\n");
+    if lang.is_some() {
+        out.push_str("Transcript\n");
+    }
     out
 }
 
@@ -1094,9 +1402,109 @@ mod tests {
     fn notes_read_as_the_python_ytqs() {
         let meta = json::parse(r#"{"title": "Me at the zoo", "uploader": "jawed", "webpage_url": "https://www.youtube.com/watch?v=jNQXAC9IVRw",
             "timestamp": 1114313512, "license": null, "description": "  desc  ", "subtitles": {"en": []}}"#).unwrap();
-        let n = notes_at(&meta, "u", "en", Some("jawed-Me_at_the_zoo_jNQXAC9IVRw.mp4"), 1114313512.0);
+        let n = notes_at(&meta, "u", Some("en"), Some("jawed-Me_at_the_zoo_jNQXAC9IVRw.mp4"), 1114313512.0);
         assert!(n.starts_with("Me at the zoo\n\nNotes\n  Title:      Me at the zoo\n  Author:     jawed\n"), "{n}");
         assert!(n.contains("  License:    not stated\n  Video:      jawed-Me_at_the_zoo_jNQXAC9IVRw.mp4\n  Captions:   en, written by the uploader\n\nDescription\ndesc\n\nTranscript\n"), "{n}");
         assert!(cookie_problem("ERROR: Sign in to confirm you're not a bot") && !cookie_problem("HTTP Error 500"));
+    }
+
+    #[test]
+    fn a_capture_says_what_the_text_beside_it_says() {
+        let notes = json::parse(r#"{"webpage_url":"https://x.com/a/status/1","title":"a post",
+            "uploader":"someone","timestamp":1750246101,
+            "view_count":34776,"like_count":412,"repost_count":68,"comment_count":38}"#).unwrap();
+        let m = capture_meta(&notes, "u", "/tmp/a.mp4", 1758142323.0);
+        assert_eq!(m.get("source").unwrap().as_str(), Some("https://x.com/a/status/1"));
+        assert_eq!(m.get("note").unwrap().as_str(), Some("a post by someone"));
+        assert!(m.get("published").unwrap().as_str().unwrap().starts_with("2025-06-18"), "{:?}", m.get("published"));
+        let st = m.get("stats").expect("stats");
+        assert!(matches!(st.get("views"), Some(Value::Num(n)) if *n == 34776.0));
+        assert!(matches!(st.get("replies"), Some(Value::Num(n)) if *n == 38.0));
+        // Stamped, like the block in the .txt: the numbers are a fact about a moment.
+        assert!(st.get("read").unwrap().as_str().unwrap().starts_with("2025-09-17"), "{:?}", st.get("read"));
+    }
+
+    #[test]
+    fn a_capture_with_nothing_new_is_the_header_it_always_was() {
+        // What the stand-in gives: no counts, no timestamp. The header must be
+        // untouched, or every capture written before today reads differently.
+        let notes = json::parse(r#"{"webpage_url":"https://www.youtube.com/watch?v=x","title":"T",
+            "uploader":"U","license":null}"#).unwrap();
+        let m = capture_meta(&notes, "u", "/tmp/a.mp4", 1758142323.0);
+        assert!(m.get("stats").is_none(), "no counts, no stats");
+        assert!(m.get("published").is_none(), "no timestamp, no published");
+        assert!(m.get("license").is_none(), "null license stays absent");
+        assert_eq!(m.get("note").unwrap().as_str(), Some("T by U"));
+    }
+
+    #[test]
+    fn a_discussion_is_a_tree_not_a_list() {
+        let list = match json::parse(r#"[
+            {"id":"c1","parent":"root","author":"@SanDiegoZoo","author_id":"@SanDiegoZoo",
+             "timestamp":1682300000,"like_count":12004,"is_pinned":true,"text":"The elephants say hi."},
+            {"id":"c2","parent":"c1","author":"@tacticals","author_id":"@tacticals",
+             "timestamp":1682900000,"like_count":340,"text":"An answer."},
+            {"id":"c3","parent":"root","author":"@frandovian","author_id":"@frandovian",
+             "timestamp":1683000000,"like_count":0,"text":"A second root."},
+            {"id":"c4","parent":"gone","author":"@orphan","author_id":"@orphan","text":"Half a thread."}
+        ]"#).unwrap() { Value::Arr(v) => v, _ => panic!("not an array") };
+        let d = discussion(&list, Some(99.0));
+        // The cap is stated against the total, so the reader knows what is missing.
+        assert!(d.starts_with("Discussion  (4 of 99)\n"), "{d}");
+        // A reply is drawn under the comment it answers, not in the order it arrived.
+        let root = d.find("@SanDiegoZoo").unwrap();
+        let reply = d.find("@tacticals").unwrap();
+        let second = d.find("@frandovian").unwrap();
+        assert!(root < reply && reply < second, "{d}");
+        assert!(d.contains("    |  @tacticals"), "{d}");
+        // The uploader's mark and the likes, whole.
+        assert!(d.contains("* pinned  12,004 likes"), "{d}");
+        // No likes is no mention of likes, rather than "0 likes". Checked on the
+        // whole line, because "340 likes" contains "0 likes" as a substring.
+        assert!(d.contains("\n  @frandovian  2023-05-01\n"), "{d}");
+        // A comment whose parent was cut by the cap is still shown, as a root.
+        assert!(d.contains("\n  @orphan"), "{d}");
+        // Without a total there is nothing to compare the count against.
+        assert!(discussion(&list, None).starts_with("Discussion  (4)\n"));
+    }
+
+    #[test]
+    fn counts_are_grouped_in_threes_and_never_rounded() {
+        assert_eq!(commas(0.0), "0");
+        assert_eq!(commas(38.0), "38");
+        assert_eq!(commas(999.0), "999");
+        assert_eq!(commas(1000.0), "1,000");
+        assert_eq!(commas(34776.0), "34,776");
+        assert_eq!(commas(378402118.0), "378,402,118");
+        assert_eq!(commas(-1234.0), "-1,234");
+    }
+
+    /// The x.com post of the phase-5 measurements, with no captions sought.
+    #[test]
+    fn stats_are_stamped_and_only_what_the_site_gave() {
+        let meta = json::parse(r#"{"title": "a post", "uploader": "someone",
+            "webpage_url": "https://x.com/someone/status/1", "timestamp": 1750246101,
+            "view_count": 34776, "like_count": 412, "repost_count": 68, "comment_count": 38}"#).unwrap();
+        let n = notes_at(&meta, "u", None, Some("someone-a_post_1.mp4"), 1758142323.0);
+        // No captions were sought, so neither row about them is written.
+        assert!(!n.contains("Captions:"), "{n}");
+        assert!(!n.contains("Transcript"), "{n}");
+        // Stamped with its own time, and whole.
+        assert!(n.contains("Stats  (read "), "{n}");
+        assert!(n.contains("\n  Views:      34,776\n  Likes:      412\n  Reposts:    68\n  Replies:    38\n"), "{n}");
+    }
+
+    #[test]
+    fn a_site_that_gave_no_number_says_nothing_about_it() {
+        // YouTube has no reposts: that row is absent, not nought.
+        let meta = json::parse(r#"{"title": "v", "uploader": "u", "view_count": 1234567, "comment_count": 0}"#).unwrap();
+        let n = notes_at(&meta, "u", None, None, 1758142323.0);
+        assert!(n.contains("\n  Views:      1,234,567\n"), "{n}");
+        assert!(n.contains("\n  Replies:    0\n"), "{n}");
+        assert!(!n.contains("Reposts"), "{n}");
+        assert!(!n.contains("Likes"), "{n}");
+        // And a download whose site gave nothing at all has no block at all.
+        let bare = json::parse(r#"{"title": "v", "uploader": "u"}"#).unwrap();
+        assert!(!notes_at(&bare, "u", None, None, 1758142323.0).contains("Stats"), "no counts, no block");
     }
 }

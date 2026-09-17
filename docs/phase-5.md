@@ -2,11 +2,12 @@
 
 # Phase 5: the counts, and the discussion
 
-**This phase has no row in the report's table.** Every phase before it quoted
-its done-condition from V-H of `docs/staticstream-project-lab-report.md` (in
-copal); that table ends at phase 4. So the bar here is set from two other
-places, and it is worth naming them rather than pretending the table grew a
-row on its own:
+**This phase had no row in the report's table when it began.** Every phase
+before it quoted its done-condition from V-H of
+`docs/staticstream-project-lab-report.md` (in copal); that table ended at phase
+4. So the bar here was set from two other places, and it is worth naming them
+rather than pretending the table grew a row on its own. (Step 5e has since
+added one, saying exactly that.)
 
 - **What the owner asked for**: the replies to an x.com post as a discussion,
   in a `.txt`; the same for YouTube; and the counts a post carries, stamped
@@ -136,6 +137,81 @@ Two things are in the way and both are small:
 
 Each step is useful alone, as V-H asks of every phase: after 5a an X download
 already explains itself, with no new interface at all.
+
+## As built
+
+| | |
+|---|---|
+| `make check` | **382**, exit 0 — 44 + 26 + 32 + 50 + 34 + 133 + 63 |
+| unit tests | **130**, six of them new |
+
+**The battery did not grow, and the done-condition above that said it would is
+wrong.** It says *"`make check` grows"*. It did not, and it should not have:
+every new section is normalised out of the comparisons, because the frozen
+Python writes none of them and a specification cannot be an oracle for output
+that postdates it. What grew is the fixtures — `counts_are_grouped_in_threes…`,
+`stats_are_stamped…`, `a_site_that_gave_no_number…`, `a_discussion_is_a_tree…`,
+`a_capture_says_what_the_text_beside_it_says` and
+`a_capture_with_nothing_new_is_the_header_it_always_was`. The battery's number
+staying still is the result, not a gap in it: 382 comparisons that held before
+hold now.
+
+Three of those 382 earned their keep during the phase, each catching something
+before it reached a commit:
+
+| Caught | By |
+|---|---|
+| `COMMENTS` added to the settings map compared byte for byte with the Python's | `ytq-crosscheck`, 5 of 32 |
+| the lengthened `video:META` field list changing the logged yt-dlp argv | `ytq-runner-crosscheck` |
+| one trailing blank line left where the Discussion was stripped | `ytq-runner-crosscheck`, on a real download |
+
+## Deviations, written down as they are made
+
+### Step 5c contradicted this file, and this file was wrong
+
+The step list above says the Discussion comes from **`--write-comments` on the
+transcript run that is already happening**. It does not, and should not. The
+architecture written between the two (`docs/architecture.md` §6) reasoned it
+out properly: a comment fetch is the slowest and most rate-limited thing
+yt-dlp does here, so hanging it on the transcript's run would mean a 429 on
+comments costs the captions that were already in hand — which is the very
+failure the transcript was split off the *download* run to avoid. Sharing a
+run to save one process call would have broken the only rule the seam has.
+
+**The comments get their own run.** The step list is what was planned; this is
+what the reasoning required, and the reasoning is younger and better.
+
+### "(no discussion)" is for a failure, not for a quiet video
+
+A video with comments turned off, or with none, is not a failed fetch. Saying
+`(no discussion)` in the done line either way would have been both misleading
+and — because no fixture has comments — a change to the message text of every
+comparison the Python ytq is held to. So the done line gains `+ discussion`
+only where comments were captured, and `(no discussion)` only where the fetch
+actually broke. Silence means the video had nothing to say.
+
+### The stand-in had to learn the run before the caption branch
+
+`tests/standin/yt-dlp` keyed its caption branch on `--skip-download`, which
+the comments run also passes — so without a branch of its own the comments
+run would have fallen through and written `.vtt` files nobody asked for. The
+new branch is matched on `--write-comments` and placed **before** it, and it
+emits no comments unless the id contains `TALK`. The Python ytq never makes
+this run, so every existing comparison is untouched by construction rather
+than by care.
+
+### The discussion is appended, or writes the file itself
+
+`{stem}.txt` already exists when the captions arrived, so the Discussion is
+appended to it. When the captions failed there is no file, and the comments
+step writes one from the notes it already holds — a video whose captions 429ed
+but whose comments came back still leaves a readable record.
+
+### A comment whose parent was cut by the cap is drawn as a root
+
+The cap is a count of comments, not of threads, so it can land in the middle
+of one. Dropping a reply whose parent did not survive would silently discard
+what was actually fetched; it is shown at the top level instead.
 
 ## Decisions already made
 

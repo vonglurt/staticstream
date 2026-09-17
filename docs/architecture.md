@@ -496,10 +496,16 @@ resolved state is not visible in any file, so it is written out here.
 ```
 
 `KEY=VALUE`, `#` for comments, keys case-insensitive, quotes stripped, a
-leading `~` expanded. Three settings are not in that chain at all, because
+leading `~` expanded. **Four** settings are not in that chain at all, because
 they are resolved by a function with a fallback rather than by a default
-string — `OUTPUT`, `ARCHIVE_DIR` and `SSTR_KEY` — and those three are exactly
-the ones that decide what a download *becomes*.
+string — `OUTPUT`, `ARCHIVE_DIR`, `SSTR_KEY` and `COMMENTS` — and those four
+are exactly the ones that decide what a download *becomes*.
+
+That is not only a tidy grouping; it is enforced. The settings map is compared
+to the Python ytq's `settings()` **byte for byte**, so a key the frozen
+specification has never heard of cannot go in it. `COMMENTS` was put there
+first, during phase 5, and five of the 32 comparisons failed within the hour —
+which is the check doing precisely the job it exists for.
 
 ### The resolved state
 
@@ -510,6 +516,7 @@ the ones that decide what a download *becomes*.
 | `OUTPUT` | `sstr` | unset → the built-in fallback |
 | `SSTR_KEY` | `~/.ssh/id_ed25519` | unset → the key that exists |
 | `SUBS` | `en,en-orig,en-US,en-GB` | default |
+| `COMMENTS` | `200` | unset → the built-in fallback |
 | `FORMAT` | best mp4/avc1 + m4a, falling back | default |
 | `POLL` | `1` | default |
 | autostart | **on** | `~/.config/ytq/auto` exists |

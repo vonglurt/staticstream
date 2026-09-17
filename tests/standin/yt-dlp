@@ -73,6 +73,33 @@ if "--simulate" in args and "--skip-download" not in args:
     out("%s\t1080\tmp4" % title)
     sys.exit(0)
 
+# The comment fetch, which is its own run and must be answered before the
+# caption branch below -- both pass --skip-download, and a comments run that
+# fell through to that branch would write .vtt files nobody asked for.
+#
+# No comments by default, so every comparison with the Python ytq (which never
+# makes this run at all) is untouched. An id containing TALK gets a thread.
+if "--write-comments" in args:
+    talk = []
+    if "TALK" in vid:
+        talk = [
+            {"id": "c1", "parent": "root", "author": "@SanDiegoZoo", "author_id": "@SanDiegoZoo",
+             "timestamp": 1682300000, "like_count": 12004, "is_pinned": True,
+             "text": "The elephants say hi."},
+            {"id": "c2", "parent": "c1", "author": "@tacticals.1811", "author_id": "@tacticals.1811",
+             "timestamp": 1682900000, "like_count": 340, "is_pinned": False,
+             "text": "A reply long enough to need wrapping " + "and so on " * 12},
+            {"id": "c3", "parent": "root", "author": "@frandovian", "author_id": "@frandovian",
+             "timestamp": 1683000000, "like_count": 0, "is_pinned": False,
+             "text": "A second root, with no likes."},
+        ]
+    for p in [args[i + 1] for i, a in enumerate(args) if a == "--print"]:
+        if p.startswith("COUNT"):
+            out("COUNT %s" % (99 if "TALK" in vid else 0))
+        elif p.startswith("TALK"):
+            out("TALK " + json.dumps(talk))
+    sys.exit(0)
+
 if "--skip-download" in args:
     stem = name("mp4")[:-len(".mp4")]
     uploader = vid.endswith("U")

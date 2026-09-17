@@ -18,6 +18,16 @@ pub const DEFAULT_FORMAT: &str = "bv*[ext=mp4][vcodec^=avc1]+ba[ext=m4a]/bv*[ext
 // Exact names, not en.*: that also takes YouTube's machine translations into
 // English (en-de is English from German), each one more caption request.
 pub const DEFAULT_SUBS: &str = "en,en-orig,en-US,en-GB";
+// How many comments a download may take, at most. Comments cost requests, and
+// a video with a million of them must not be able to turn one download into an
+// afternoon. COMMENTS= (empty) asks for none at all, as SUBS= does for captions.
+//
+// NOT a default in `load()` below, and deliberately: that map is compared to the
+// Python ytq's `settings()` byte for byte, and a key the specification has never
+// heard of does not belong in it. `runner::comments_of` resolves it instead, as
+// `output_of`, `archive_dir_of` and `sstr_key_of` resolve the other three
+// settings that decide what a download becomes.
+pub const DEFAULT_COMMENTS: &str = "200";
 
 /// Where downloads go when nothing says otherwise: the folder shared with the
 /// Mac when that share is really mounted -- a link to an unmounted share would

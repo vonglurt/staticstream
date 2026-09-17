@@ -94,7 +94,10 @@ collect() { # <scenario> <side> <home>
     sed -E -e "s|$h|HOME|g" -e 's/^[0-9-]+ [0-9:]+ \[[0-9]+\] //' -e '/took run\.lock/d' \
         -e 's/started a runner, pid [0-9]+/started a runner/' -e 's/runner [0-9]+: the queue/runner: the queue/' \
         -e 's/\(pid [0-9]+\)/(pid P)/' -e 's/checked in [0-9.]+ s/checked in T s/' -e 's/after [0-9:]+/after T/g' \
-        -e 's/took [0-9:]+\)/took T)/g' -e 's/, [0-9:]+ in([,;])/, T in\1/' "$h/.local/share/ytq/ytq.log" > "$W/$s.log.$side" 2>/dev/null
+        -e 's/took [0-9:]+\)/took T)/g' -e 's/, [0-9:]+ in([,;])/, T in\1/' \
+        -e 's/%\(\.\{[^}]*\}\)j/%(.{FIELDS})j/g' \
+        -e '/: fetching the discussion,/d' -e '/--write-comments/d' \
+        -e '/: discussion run exited/d' -e '/: discussion:/d' "$h/.local/share/ytq/ytq.log" > "$W/$s.log.$side" 2>/dev/null
     python3 -c '
 import json, sys
 try: q = json.load(open(sys.argv[1]))
@@ -109,11 +112,40 @@ q = whole(q)
 for i in q: i.pop("added", None)
 print(json.dumps(q, indent=1, sort_keys=True, ensure_ascii=False).replace(sys.argv[2], "HOME"))' "$h/.local/share/ytq/queue.json" "$h" > "$W/$s.queue.$side"
     (cd "$h/out" && for f in *; do [ -e "$f" ] && printf '%s %s\n' "$f" "$(wc -c < "$f")"; done) > "$W/$s.files.$side"
-    for f in "$h"/out/*.txt; do [ -e "$f" ] && { echo "== $(basename "$f")"; sed -E 's/^(  Downloaded: ).*/\1T/' "$f"; }; done > "$W/$s.txt.$side"
+    for f in "$h"/out/*.txt; do [ -e "$f" ] && { echo "== $(basename "$f")"; notes_only "$f"; }; done > "$W/$s.txt.$side"
     { cat "$h/notify" 2>/dev/null; echo "== opened"; cat "$h/opened" 2>/dev/null; } | sed "s|$h|HOME|g" > "$W/$s.said.$side"
 }
 compare() { # <scenario> <label>
     for kind in queue log files txt said; do same "$2: $kind" "$W/$1.$kind.py" "$W/$1.$kind.rs"; done
+}
+# The log likewise. The Rust ytq makes a yt-dlp run the Python ytq has no
+# equivalent of -- the comment fetch of phase 5 -- so its four lines come out of
+# the log before the two are compared, and the yt-dlp field lists are collapsed
+# to %(.{FIELDS})j because the Rust asks for more fields than the Python did.
+# Both are done in collect() above. The step still RUNS in every scenario, which
+# is the part worth having: what is filtered is the record of a step the
+# specification never had, not the step itself.
+#
+# The .txt as both sides can be held to write it.
+#
+# Phase 5 gives the Rust ytq two sections the frozen Python ytq never had -- a
+# stamped Stats block and a threaded Discussion -- so they come out before the
+# two are compared, exactly as the Downloaded line is normalised rather than
+# demanded to match. This comparison's job is that the Rust did not break what
+# the Python did; a specification written before a feature cannot be that
+# feature's oracle, so what the new sections CONTAIN is held by unit fixtures
+# instead (capture_meta, notes_at and discussion in src/ytq/runner.rs).
+notes_only() {  # <file>
+    awk '
+        /^Discussion  \(/ { rest = 1 }
+        rest              { next }
+        /^Stats  \(read /  { stats = 1; next }
+        stats && /^$/     { stats = 0; next }
+        stats             { next }
+        /^$/              { held++; next }
+                          { while (held-- > 0) print ""
+                            sub(/^  Downloaded: .*/, "  Downloaded: T"); print }
+    ' "$1"
 }
 norm_status() { sed -E -e "s|$2|HOME|g" -e 's/\(for [0-9:]+\)/(for T)/' -e 's/started [0-9:]+ ago/started T ago/' -e 's/runner pid [0-9]+/runner pid P/' -e 's/^runner: pid [0-9]+/runner: pid P/' "$1"; }
 
@@ -244,7 +276,7 @@ if [ "${YTQ_REAL:-1}" != 0 ] && timeout 60 yt-dlp --ignore-config --simulate --n
             "$@" add --no-run https://www.youtube.com/watch?v=jNQXAC9IVRw && "$@" run --quiet' _ "$side" "$W/ytq.py" "$SSTR" > /dev/null 2>&1
         (cd "$H/out" && ls) > "$W/H.files.$side"
         for f in "$H"/out/*.mp4; do ffprobe -v error -show_entries format_tags=title,artist,date,comment -of default=nw=1 "$f" | sed -E 's/^(Downloaded: ).*/\1T/'; done > "$W/H.tags.$side"
-        for f in "$H"/out/*.txt; do sed -E 's/^(  Downloaded: ).*/\1T/' "$f"; done > "$W/H.txt.$side"
+        for f in "$H"/out/*.txt; do notes_only "$f"; done > "$W/H.txt.$side"
         python3 -c 'import json,sys; print([(i["status"], i["file"].replace(sys.argv[2], "HOME"), i["title"], i["quality"]) for i in json.load(open(sys.argv[1]))])' \
             "$H/.local/share/ytq/queue.json" "$H" > "$W/H.queue.$side"
     done
