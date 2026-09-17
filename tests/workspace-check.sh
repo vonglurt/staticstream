@@ -290,7 +290,7 @@ for size in 110x30 80x24 50x12; do
 done
 
 # ---- B: nothing outside the frame ------------------------------------------
-if start 80x24; then
+if start 80x24 "$A"; then
     long=$(screen | awk '{ if (length($0) > 80) print NR }' | head -1)
     if [ -z "$long" ]; then ok "B no line is wider than the window"; else bad "B line $long is wider than 80"; fi
     rows=$(screen | grep -c '^')
@@ -303,7 +303,7 @@ else
 fi
 
 # ---- K: the keys -----------------------------------------------------------
-if start 110x30; then
+if start 110x30 "$A"; then
     first=$(ls_names "$A" | sed -n '1p')
     second=$(ls_names "$A" | sed -n '2p')
 
@@ -344,7 +344,7 @@ else
 fi
 
 # ---- I: the Inspector (3b) -------------------------------------------------
-if start 110x30; then
+if start 110x30 "$A"; then
     if select_name "capture.sstr"; then
         # The Inspector's first line is the name, then a blank, then what
         # `sstr verify` prints -- cut to the pane, which is a third of 110.
@@ -385,7 +385,7 @@ fi
 LOG="$H/.local/share/ytq/ytq.log"
 ytq_() { env -i HOME="$H" PATH="/usr/bin:/bin" "$YTQ" "$@" >/dev/null 2>&1; }
 
-if start 110x30; then
+if start 110x30 "$A"; then
     # Nothing has written to ytq.log yet, so the only line is the Workspace's
     # own -- and it is the command line that opened it, which is the rule
     # Services will keep in 3d.
@@ -414,7 +414,7 @@ else
     bad "T the Workspace did not draw"
 fi
 
-if start 50x12; then
+if start 50x12 "$A"; then
     if [ "$(band 50 12 | grep -c '^')" -eq 1 ]; then
         ok "T the band is one row in a short window"
     else
@@ -440,7 +440,7 @@ fi
 # cannot be placed at that instant from a shell, and is checked instead by
 # a_rotation_loses_nothing_at_the_seam in src/workspace/transcript.rs, which
 # can. The two together are the step's done-condition.
-if start 110x30; then
+if start 110x30 "$A"; then
     before=$(band 110 30 | tail -1)
     awk 'BEGIN{for(i=0;i<100000;i++) printf "2026-09-16 08:00:00 [1] padding line %d\n", i}' >> "$LOG"
     sleep 1.5
@@ -542,7 +542,7 @@ AWKWARD="Don't Look Up.sstr"
 "$SSTR" record "$A/$AWKWARD" --input "$W/payload.txt" --type text/plain \
     --note 'a name that needs quoting' >/dev/null 2>&1 || bad "V could not record the awkward capture"
 
-if start "${VW}x${VH}"; then
+if start "${VW}x${VH}" "$A"; then
     if select_name "capture.sstr"; then
         # -- Verify: a report a person reads, so it takes the terminal --
         keys v; sleep 1.5
@@ -636,7 +636,7 @@ fi
 
 # -- Serve: what it hands a player equals what the command line hands one --
 if command -v curl >/dev/null 2>&1 && ! nc -z 127.0.0.1 "$SERVE_PORT" 2>/dev/null; then
-    if start "${VW}x${VH}"; then
+    if start "${VW}x${VH}" "$A"; then
         if select_name "capture.sstr"; then
             keys s; sleep 1.5
             line=$(said)
@@ -771,7 +771,7 @@ print(json.dumps(whole(json.load(open(sys.argv[1]))), indent=1, sort_keys=True, 
 }
 
 fresh_queue
-if start "${VW}x${VH}"; then
+if start "${VW}x${VH}" "$A"; then
     keys Q; sleep 0.6
     if screen | sed -n '1p' | grep -q 'the Queue'; then
         ok "Q Shift-Q opens the Queue"
@@ -854,7 +854,7 @@ else
 fi
 
 fresh_queue
-if start "${VW}x${VH}"; then
+if start "${VW}x${VH}" "$A"; then
     keys Q; sleep 0.6
     keys f; sleep 1.5
     keys Enter; sleep 0.8
@@ -899,7 +899,7 @@ fi
 rm -f "$QJ" "$W/q-workspace" "$W/q-shell" "$W/q-window" "$W/q-python" "$W/f-workspace" "$W/f-shell" "$W/f-window" "$W/f-python"
 
 # ---- H: the Shelf (3e) ------------------------------------------------------
-if start "${VW}x${VH}"; then
+if start "${VW}x${VH}" "$A"; then
     if select_name "capture.sstr"; then
         keys Space; sleep 0.5
         if screen | sed -n '2p' | grep -q '\[capture.sstr\]'; then
@@ -946,11 +946,31 @@ else
 fi
 
 # ---- S: where it starts ----------------------------------------------------
+# With no folder named it opens on the QUEUE: ytq's window is the habit this
+# replaces, so the Workspace starts where ytq started. ARCHIVE_DIR is not lost
+# -- it is the column underneath, one h away, because open_queue pushes rather
+# than replaces. Both halves are checked, since "it opened on the queue" is
+# worth little if the archive can no longer be reached.
 if start 80x24; then
-    if screen | sed -n '1p' | grep -q 'Archive'; then ok "S it starts at ARCHIVE_DIR from media.conf"; else bad "S it did not start at ARCHIVE_DIR"; fi
+    if screen | sed -n '1p' | grep -q 'Archive'; then
+        bad "S with no folder named it opened on the archive, not the queue"
+    else
+        ok "S with no folder named it does not open on the archive"
+    fi
+    keys h
+    if screen | sed -n '1p' | grep -q 'Archive'; then ok "S h backs out to ARCHIVE_DIR from media.conf"; else bad "S h did not reach ARCHIVE_DIR"; fi
     stop
 else
     bad "S the Workspace did not draw"
+fi
+
+# A folder named on the command line wins -- what keeps every Service and any
+# script that passes a path working exactly as it did.
+if start 80x24 "$A"; then
+    if screen | sed -n '1p' | grep -q 'Archive'; then ok "S a folder named on the command line is what opens"; else bad "S a named folder was not what opened"; fi
+    stop
+else
+    bad "S the Workspace did not draw over a named folder"
 fi
 
 mv "$A" "$A.gone"

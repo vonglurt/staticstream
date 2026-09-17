@@ -963,6 +963,12 @@ impl Runner {
         let ea = format!("youtube:max_comments={cap}");
         for a in [
             "--skip-download", "--no-simulate", "--no-playlist", "--no-warnings", "--write-comments",
+            // --write-comments puts the comments in the infojson, and under
+            // --no-simulate yt-dlp then WRITES that infojson -- 82 KB of it,
+            // into whatever directory the process happens to be in, because
+            // this run needs no -o and so gives none. One per download, in a
+            // place nobody chose. Asked for explicitly not to.
+            "--no-write-info-json",
             "--extractor-args", &ea,
             "--print", "COUNT %(comment_count)s",
             "--print", "TALK %(comments)j",

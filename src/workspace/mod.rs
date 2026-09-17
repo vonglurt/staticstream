@@ -81,7 +81,8 @@ pub fn transcript_rows(h: i64) -> i64 {
 const USAGE: &str = "\
 sstr-workspace -- the Workspace: a Browser over folders of streams
 
-  sstr-workspace [DIR]     browse DIR, or ARCHIVE_DIR, or the home
+  sstr-workspace           the download queue, live -- what ytq's window showed
+  sstr-workspace DIR       browse DIR instead, as a folder
 
   up down / k j   move          right / l / Enter   open the folder
   left / h        back out      q / Esc             leave
@@ -820,6 +821,19 @@ pub fn main(argv: &[String]) -> ExitCode {
 
     let colors = std::env::var("TERM").map_or(false, |t| !t.is_empty() && t != "dumb");
     let mut b = Browser::open(&root);
+
+    // THE QUEUE IS WHAT OPENS. ytq's window showed the queue and nothing else,
+    // and that is the habit this replaces, so the Workspace starts where ytq
+    // started rather than one key away from it. The archive folder is not lost:
+    // it is the column underneath, which `h` backs out to, because open_queue
+    // pushes rather than replaces.
+    //
+    // A folder named on the command line is a person asking for that folder,
+    // and wins -- which is also what keeps the Services and any script that
+    // passes a path working exactly as they did.
+    if argv.first().filter(|a| !a.starts_with('-')).is_none() {
+        b.open_queue(&paths);
+    }
 
     // The Transcript follows ytq's log, and carries sstr's own events beside
     // it. Its first line is the command line that opened this Workspace --
