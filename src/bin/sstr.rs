@@ -28,6 +28,7 @@ use staticstream::format::reader::{self, Erasures, Reader, Source};
 use staticstream::format::sha256::{hex, Sha256};
 use staticstream::format::writer::{self, Writer};
 use staticstream::ytq::live::fmt_size;
+use staticstream::ytq::settings;
 use staticstream::tty::{self as tty, Unarmor};
 
 const USAGE: &str = "\
@@ -48,6 +49,7 @@ sstr -- Static Stream: record a stream into a file, and play it back as one
   sstr recv [IN] [--verify] [--paced] [--speed N] [--gap skip|zero]
             [--allowed-signers FILE] [-v]
   sstr paths
+  sstr config [list|get KEY|set KEY VALUE|unset KEY] [--file media|ytq]
 
 IN and OUT may be - for stdin and stdout. `write` is another name for record.
 A PATH given to export may be a capture or a folder of them: `sstr export .`
@@ -569,6 +571,158 @@ fn cmd_export(raw: &[String]) -> Result<i32, String> {
     Ok(if failed > 0 { 1 } else { 0 })
 }
 
+/// `sstr config`: what every setting is, where it came from, and how to
+/// change it.
+///
+/// **THE SETTINGS SCREEN IS THIS COMMAND WITH KEYS ON IT.** The Workspace's
+/// Settings panel does not write a config file; it builds `sstr config set
+/// KEY VALUE`, prints it into the Transcript, and runs it -- the same rule
+/// every Service follows, for the same reason. So the panel cannot do
+/// anything you could not have typed, the two cannot drift, and a change made
+/// in the window can be pasted into a shell script tomorrow.
+fn cmd_config(raw: &[String]) -> Result<i32, String> {
+    let a = Args::parse(raw, &["--file"])?;
+    a.check_flags(&[])?;
+    let which = a.get("--file").unwrap_or("media");
+    if !matches!(which, "media" | "ytq") {
+        return Err(format!("--file is media or ytq, not {which}"));
+    }
+    let Some((paths, home, _)) = settings::from_env() else {
+        return Err("HOME is not set".into());
+    };
+    let env = |k: &str| std::env::var(k).ok();
+    let tilde = |p: &std::path::Path| {
+        let s = p.to_string_lossy().into_owned();
+        match s.strip_prefix(&format!("{}/", home.display())) {
+            Some(rest) => format!("~/{rest}"),
+            None => s,
+        }
+    };
+    let file = if which == "ytq" { paths.ytq_config.clone() } else { paths.media_conf.clone() };
+
+    let verb = a.pos.first().map(String::as_str).unwrap_or("list");
+    match verb {
+        "list" => {
+            let rows = settings::in_force(&paths, &home, &env);
+            let wide = rows.iter().map(|(k, _, _)| k.len()).max().unwrap_or(8);
+            for (key, value, from) in rows {
+                // The source is what makes the list worth printing -- a value
+                // and no account of who set it is the thing you already had.
+                // It trails the value rather than sitting in a column of its
+                // own, because FORMAT is 76 characters and a column that FORMAT
+                // fits in is a column nothing else is near.
+                let shown = if value.is_empty() { "(none)".to_string() } else { value };
+                println!("{key:<wide$}  {:<40}  {}", shown, from.label());
+            }
+            println!();
+            println!("media.conf  {}", tilde(&paths.media_conf));
+            println!("ytq/config  {}   (read after, so it wins)", tilde(&paths.ytq_config));
+            Ok(0)
+        }
+        "get" => {
+            let key = a.pos.get(1).ok_or("config get needs a KEY")?;
+            let rows = settings::in_force(&paths, &home, &env);
+            match rows.iter().find(|(k, _, _)| k.eq_ignore_ascii_case(key)) {
+                Some((_, v, _)) => {
+                    println!("{v}");
+                    Ok(0)
+                }
+                None => Err(format!("no setting '{key}'\n\n{}", known())),
+            }
+        }
+        "set" | "unset" => {
+            let key = a.pos.get(1).ok_or_else(|| format!("config {verb} needs a KEY"))?;
+            let Some(d) = settings::setting(key) else {
+                return Err(format!("no setting '{key}'\n\n{}", known()));
+            };
+            let value = if verb == "unset" {
+                None
+            } else {
+                Some(a.pos.get(2).cloned().unwrap_or_default())
+            };
+            // A Cycle or a Toggle has a short list of words it means, and
+            // anything else is a typo that would sit in the file doing
+            // nothing. Text and Path take what they are given: a player, a
+            // format selector and a folder are not this program's to second-guess.
+            if let Some(v) = &value {
+                let allowed: &[&str] = match d.kind {
+                    settings::Kind::Cycle(list) => list,
+                    settings::Kind::Toggle(on, off) => &[on, off][..],
+                    _ => &[],
+                };
+                if !allowed.is_empty() && !allowed.iter().any(|w| w.eq_ignore_ascii_case(v)) {
+                    return Err(format!("{} is one of {}, not '{v}'", d.key, allowed.join(", ")));
+                }
+            }
+            // AUTOSTART is the presence of a file, so it is written as one.
+            if settings::is_autostart(d.key) {
+                let on = value.as_deref().map_or(false, |v| v.eq_ignore_ascii_case("on"));
+                if on {
+                    if let Some(dir) = paths.autostart.parent() {
+                        std::fs::create_dir_all(dir).map_err(|e| format!("{}: {e}", dir.display()))?;
+                    }
+                    File::create(&paths.autostart).map_err(|e| format!("{}: {e}", paths.autostart.display()))?;
+                    println!("AUTOSTART=on    {}", tilde(&paths.autostart));
+                } else {
+                    match std::fs::remove_file(&paths.autostart) {
+                        Ok(()) | Err(_) => {}
+                    }
+                    println!("AUTOSTART=off   {} is gone", tilde(&paths.autostart));
+                }
+                return Ok(0);
+            }
+            let before = settings::in_force(&paths, &home, &env)
+                .into_iter()
+                .find(|(k, _, _)| *k == d.key)
+                .map(|(_, v, s)| (v, s));
+            settings::write_key(&file, d.key, value.as_deref()).map_err(|e| format!("{}: {e}", file.display()))?;
+            let after = settings::in_force(&paths, &home, &env)
+                .into_iter()
+                .find(|(k, _, _)| *k == d.key)
+                .map(|(_, v, s)| (v, s));
+            let show = |v: &str| if v.is_empty() { "(none)".to_string() } else { v.to_string() };
+            // THE FILE WRITTEN IS NOT ALWAYS THE FILE THAT DECIDES. media.conf
+            // is read first and ytq's own config after, so a key set in both
+            // is a key this command can change with no effect at all. What was
+            // WRITTEN and what is now IN FORCE are two facts, and a settings
+            // editor that prints only the second while doing only the first is
+            // a trap. So on the ordinary path they are the same sentence, and
+            // where they differ they are two, with the line that closes the gap.
+            let shadowed = which == "media" && matches!(after, Some((_, settings::Source::Ytq)));
+            match (before, after) {
+                _ if shadowed => {
+                    let now = settings::in_force(&paths, &home, &env)
+                        .into_iter()
+                        .find(|(k, _, _)| *k == d.key)
+                        .map(|(_, v, _)| v)
+                        .unwrap_or_default();
+                    println!("{}={} written to {}", d.key, show(value.as_deref().unwrap_or("")), tilde(&file));
+                    println!("  but {} also sets {} and is read after it, so {} is still {}", tilde(&paths.ytq_config), d.key, d.key, show(&now));
+                    println!("  sstr config --file ytq {} {} {}", verb, d.key, value.as_deref().unwrap_or(""));
+                }
+                (Some((b, _)), Some((n, _))) => println!("{}={}   was {}   -> {}", d.key, show(&n), show(&b), tilde(&file)),
+                _ => println!("{}   -> {}", d.key, tilde(&file)),
+            }
+            Ok(0)
+        }
+        other => Err(format!("no config verb '{other}': list, get, set or unset\n\n{}", known())),
+    }
+}
+
+fn known() -> String {
+    let mut out = String::from("the settings:\n");
+    for d in settings::SETTINGS {
+        let how = match d.kind {
+            settings::Kind::Cycle(list) => list.join(" | "),
+            settings::Kind::Toggle(on, off) => format!("{on} | {off}"),
+            settings::Kind::Path => "a path".into(),
+            settings::Kind::Text => "text".into(),
+        };
+        out.push_str(&format!("  {:<13} {:<18} {}\n", d.key, how, d.help));
+    }
+    out
+}
+
 fn cmd_armor(raw: &[String]) -> Result<i32, String> {
     let a = Args::parse(raw, &["--baud", "--flush-ms"])?;
     a.check_flags(&[])?;
@@ -767,6 +921,7 @@ fn main() -> ExitCode {
         Some("play") => cmd_play(rest),
         Some("verify") => cmd_verify(rest),
         Some("export") => cmd_export(rest),
+        Some("config") => cmd_config(rest),
         Some("armor") => cmd_armor(rest),
         Some("unarmor") => cmd_unarmor(rest),
         Some("recv") => cmd_recv(rest),

@@ -30,9 +30,9 @@ line of it here, and retired that one.
 
 ## Status: phases 0–3 done, phase 4 all but two runs
 
-`make check` is **389 checks** and **136 unit tests**, and passes with nothing
+`make check` is **399 checks** and **141 unit tests**, and passes with nothing
 installed but `cargo`: 44 comparisons against the Python prototype, 26 of
-version 1's outer code, 32 + 50 + 34 + 133 across ytq, and 70 of the
+version 1's outer code, 32 + 50 + 34 + 133 across ytq, and 80 of the
 Workspace. Clone it and run `make check` — it needs no second checkout, no
 network and no crates.
 
@@ -234,6 +234,39 @@ Transcript before it runs.
 guide to the workflow this exists for: a URL copied on the Mac, through the
 SPICE clipboard, into ytq's queue, and out as a file on the folder the Mac
 shares with the guest.
+
+## Settings
+
+`sstr config` is the settings of all three programs: what each one is, which
+file said so, and how to change it.
+
+```
+sstr config                      every setting, its value, and where it came from
+sstr config get OUTPUT
+sstr config set OUTPUT mp4
+sstr config unset SSTR_KEY
+sstr config --file ytq set OUTPUT sstr     ~/.config/ytq/config instead
+```
+
+`~/.config/copal/media.conf` is written by default: it is read by `sstr`, `ytq`
+and the Workspace alike. `~/.config/ytq/config` is read *after* it, so a key
+set in both is a key changed in the first with no effect — and `sstr config`
+says so, with the line that closes the gap, rather than leaving you to find out.
+
+A change is a line edit: the line that sets the key is replaced where there is
+one and appended where there is not, and every other byte of the file — which
+for `media.conf` as Copal installs it is three quarters explanation — is the
+byte it already was.
+
+In the Workspace, **`,`** opens the same thing as a screen: the settings, the
+value in force, and which file set it. Space walks a value with a short list of
+choices (`OUTPUT`, `AUTOSTART`, `SSTR_DEFLATE`), `e` types one, `u` takes the
+line out, `w` aims the next change at the other file.
+
+**The screen writes no config file.** It builds `sstr config set KEY VALUE`,
+says that line into the Transcript, runs it, and says back what it printed —
+the rule every Service follows, so a change made with one key can be read out
+of the Transcript and pasted into a setup script.
 
 ## Install
 

@@ -95,7 +95,12 @@ EOF
 H="$W/home"
 A="$H/Videos/Archive"
 mkdir -p "$H/.config/copal" "$A/SharedVM/deeper" "$A/Notes"
-printf 'ARCHIVE_DIR=%s\n' "$A" > "$H/.config/copal/media.conf"
+# WITH ITS COMMENTS, because Copal's media.conf is three quarters explanation
+# and the Settings screen must not cost the file any of it. A fixture of bare
+# KEY=VALUE lines would let a writer that reformats the whole file pass.
+printf '# media.conf, as the check writes it\n' > "$H/.config/copal/media.conf"
+printf '# ARCHIVE_DIR: where the Workspace opens.\n' >> "$H/.config/copal/media.conf"
+printf 'ARCHIVE_DIR=%s\n' "$A" >> "$H/.config/copal/media.conf"
 # The report's settings for the Workspace. PLAYER is a stand-in, because a
 # Service must never reach the real mpv; SERVE is the port above.
 printf 'SERVE=127.0.0.1:%s\n' "$SERVE_PORT" >> "$H/.config/copal/media.conf"
@@ -1023,6 +1028,89 @@ else
     bad "S the Workspace did not draw without an archive folder"
 fi
 mv "$A.gone" "$A"
+
+# ---- P: the Settings screen ------------------------------------------------
+#
+# THE SAME BAR AS SERVICES, because it is the same rule. The panel writes no
+# config file: it builds `sstr config set KEY VALUE`, says it into the
+# Transcript, and runs it. So the check is the one Services get -- read the
+# line the Transcript printed BEFORE it ran, run that exact line in a shell
+# with a fresh HOME, and compare what each left behind.
+if start 100x26; then
+    keys ,
+    sleep 0.5
+    if screen | sed -n '1p' | grep -q 'Workspace -- Settings'; then
+        ok "P , opens the Settings screen"
+    else
+        bad "P , did not open Settings: $(screen | sed -n '1p')"
+    fi
+    # Every setting in the table is drawn, with the value in force and who set
+    # it. ARCHIVE_DIR is the one this check's own media.conf sets, so it is the
+    # one whose provenance is not the default.
+    if screen | grep -qE '^  OUTPUT '; then ok "P the settings are listed"; else bad "P no settings listed"; fi
+    if screen | grep -qE '^  ARCHIVE_DIR .*media\.conf$'; then
+        ok "P a value says which file set it"
+    else
+        bad "P ARCHIVE_DIR did not say it came from media.conf: $(screen | grep ARCHIVE_DIR)"
+    fi
+
+    # Space on OUTPUT: the line said, then the file it changed. OUTPUT is the
+    # first row and the selection starts there.
+    # NOT `grep -c ... || echo 0`: grep -c prints its 0 AND exits 1 when it
+    # matches nothing, so the fallback runs too and the variable is two lines.
+    before=$(grep -c '^OUTPUT=' "$H/.config/copal/media.conf" 2>/dev/null)
+    keys Space
+    sleep 0.8
+    line=$(band 100 26 | grep -v '^$' | cut -c10- | grep '^sstr config ' | tail -1)
+    if [ -n "$line" ]; then
+        ok "P Space says the command line it is about to run"
+    else
+        bad "P Space said no command line"
+    fi
+    # It is a line a person could have typed: run it against a fresh HOME and
+    # it does the same thing there.
+    rm -rf "$FRESH/.config/copal"; mkdir -p "$FRESH/.config/copal"
+    in_a_shell "$line" > /dev/null 2>&1
+    got=$(sed -n 's/^OUTPUT=//p' "$FRESH/.config/copal/media.conf" 2>/dev/null)
+    mine=$(sed -n 's/^OUTPUT=//p' "$H/.config/copal/media.conf" 2>/dev/null)
+    same "P the line run in a shell leaves what the key left" "$mine" "$got"
+    # And the screen shows the new value, because it reads the file again
+    # rather than remembering what it just did.
+    if screen | grep -qE "^  OUTPUT +$mine"; then
+        ok "P the screen shows what the file now says"
+    else
+        bad "P the screen did not follow the file: $(screen | grep -E '^  OUTPUT')"
+    fi
+    if [ "$before" -le 1 ] && [ "$(grep -c '^OUTPUT=' "$H/.config/copal/media.conf")" -eq 1 ]; then
+        ok "P the file still sets the key exactly once"
+    else
+        bad "P OUTPUT= appears $(grep -c '^OUTPUT=' "$H/.config/copal/media.conf") times (was $before)"
+    fi
+    # The comments in a settings file are most of a settings file.
+    if [ "$(grep -c '^#' "$H/.config/copal/media.conf")" -gt 0 ]; then
+        ok "P the file's comments survived the change"
+    else
+        bad "P the comments were lost: $(sed -n '1,3p' "$H/.config/copal/media.conf" | tr '\n' '|')"
+    fi
+    # w aims the next change at the other file, and says so.
+    keys w
+    sleep 0.4
+    if screen | sed -n '2p' | grep -q 'ytq/config'; then
+        ok "P w aims the next change at ytq's own file, and says so"
+    else
+        bad "P w did not switch the file: $(screen | sed -n '2p')"
+    fi
+    keys q
+    sleep 0.5
+    if screen | sed -n '1p' | grep -q 'Workspace -- '; then
+        ok "P q leaves Settings and comes back to the Browser"
+    else
+        bad "P q did not leave Settings: $(screen | sed -n '1p')"
+    fi
+    stop
+else
+    bad "P the Workspace did not draw for the Settings screen"
+fi
 
 # ---- the count -------------------------------------------------------------
 if [ "$FAILED" -eq 0 ]; then

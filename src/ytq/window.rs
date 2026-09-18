@@ -442,30 +442,65 @@ impl Window {
 /// getstr reads one: at most w - len(label) - 3 characters, Backspace and
 /// Ctrl+U to correct it, Enter to end it. Escape or Ctrl+C gives up on it.
 fn prompt(keys: &Keys, screen: &mut Screen, (h, w): (i64, i64), label: &str) -> String {
+    prompt_with(keys, screen, (h, w), label, "").unwrap_or_default()
+}
+
+/// `prompt`, seeded with what the value already is, and able to say that it
+/// was given up on rather than that it was emptied.
+///
+/// TWO THINGS ytq's OWN PROMPT NEVER HAD TO TELL APART. Typing a URL starts
+/// from nothing and an empty answer means "never mind", so one String does.
+/// The Settings screen edits a value that already exists, where an empty
+/// answer is a real answer -- `SSTR_KEY=` is unsigned on purpose -- and
+/// Escape is a different one. Hence the seed and the Option; `prompt` above
+/// is this with neither, so ytq's window behaves exactly as it did.
+pub(crate) fn prompt_with(keys: &Keys, screen: &mut Screen, (h, w): (i64, i64), label: &str, seed: &str) -> Option<String> {
     let row = h.max(1);
     let x = label.chars().count() as i64 + 1;
     let max = (w - x - 2).max(0) as usize;
+    // What may be TYPED, as against what may be SHOWN. They are the same
+    // number for ytq's prompt, whose seed is empty; a seeded edit may hold and
+    // return more than the row can draw, and a path is the reason.
+    let cap = if seed.is_empty() { max } else { 4096 };
     let shown = term::printable(&cut(&ljust(&format!("{label} "), w - 1), w - 1));
-    let mut typed = String::new();
+    // THE VALUE IS KEPT WHOLE AND THE ROW SHOWS ITS END.
+    //
+    // Seeding with `chars().take(max)` was silently destructive: an
+    // ARCHIVE_DIR longer than the row -- which any path under a real home
+    // directory can be -- appeared cut off, and Enter then SAVED the cut-off
+    // path. A prompt that quietly shortens the thing it was asked to edit is
+    // worse than one that refuses to edit it.
+    //
+    // So `typed` is the whole value and only the drawing is windowed, onto the
+    // last `max` characters, which is where a path is edited. ytq's own prompt
+    // is unaffected in every respect: its seed is empty and its cap is still
+    // the row's width, so what it holds always fits and the window is the
+    // whole of it -- which is what the crosscheck against the Python window
+    // compares.
+    let mut typed: String = seed.to_string();
+    let mut gave_up = false;
     loop {
-        let _ = term::write(&format!("\x1b[{row};1H\x1b[0m\x1b[2K{shown}\x1b[{row};{}H{}\x1b[?25h", x + 1, term::printable(&typed)));
+        let n = typed.chars().count();
+        let tail: String = typed.chars().skip(n.saturating_sub(max)).collect();
+        let _ = term::write(&format!("\x1b[{row};1H\x1b[0m\x1b[2K{shown}\x1b[{row};{}H{}\x1b[?25h", x + 1, term::printable(&tail)));
         match keys.wait() {
             Key::Enter => break,
             Key::Escape | Key::Interrupt => {
                 typed.clear();
+                gave_up = true;
                 break;
             }
             Key::Backspace => {
                 typed.pop();
             }
             Key::KillLine => typed.clear(),
-            Key::Char(c) if typed.chars().count() < max => typed.push(c),
+            Key::Char(c) if typed.chars().count() < cap => typed.push(c),
             _ => {}
         }
     }
     let _ = term::write("\x1b[?25l");
     screen.invalidate();
-    py_strip(&typed).to_string()
+    (!gave_up).then(|| py_strip(&typed).to_string())
 }
 
 #[cfg(test)]

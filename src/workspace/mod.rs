@@ -41,6 +41,8 @@ pub mod transcript;
 pub use services::{How, Service};
 pub use transcript::Transcript;
 
+pub mod config;
+
 /// The nouns and the one plural of verbs, and where each word comes from.
 pub const VOCABULARY: [(&str, &str, &str); 7] = [
     ("Workspace", "the whole window", "NeXTSTEP's Workspace Manager"),
@@ -602,21 +604,36 @@ pub fn frame_of(b: &Browser, (h, w): (i64, i64), colors: bool, v: &View) -> Fram
         f.put(top, 0, &cut("(the window is too narrow for the Browser)", w), dim);
     }
 
+    put_transcript(&mut f, t, (h, w));
+    f.put(h - 1, 0, &cut(&format!(" {}", services::line_for(svcs, !v.shelf.is_empty())), w), dim);
+    f
+}
+
+/// The Transcript's band, and the rule above it.
+///
+/// Its own function because the Settings screen draws the same band, and a
+/// second copy of this would be a second band to keep in step with the first.
+/// The rows it gets are `transcript_rows(h)`, so a caller that reserved a
+/// different number has reserved the wrong number.
+///
+/// The band: the log's last lines, oldest at the top and the newest on the
+/// row above the keys line, which is the order the log has them. Fewer lines
+/// than rows pads at the top, so the newest line does not move about as the
+/// pane fills. The label sits on the first row, as the report's screen labels
+/// its one row, and the rest are indented under it so a column of timestamps
+/// lines up.
+///
+/// A LINE IS DRAWN AS `transcript::shown` DRAWS IT: the time, then the
+/// message, where the log has a date, a time and a pid. The report's screen
+/// writes `10:03:36 done: ...` and it is right to. The full stamp is 28
+/// characters, and at 50 columns -- with the label -- that leaves ten for the
+/// message and makes the pane a column of clocks. What is KEPT is still the
+/// line as ytq wrote it, so the comparison has something outside the program
+/// to be anchored to.
+pub fn put_transcript(f: &mut Frame, t: &Transcript, (h, w): (i64, i64)) {
+    let dim = Style { dim: true, ..Style::default() };
+    let tr = transcript_rows(h);
     f.put(h - 2 - tr, 0, &"-".repeat(w.max(0) as usize), dim);
-    // The band: the log's last lines, oldest at the top and the newest on the
-    // row above Services, which is the order the log has them. Fewer lines
-    // than rows pads at the top, so the newest line does not move about as
-    // the pane fills. The label sits on the first row, as the report's screen
-    // labels its one row, and the rest are indented under it so a column of
-    // timestamps lines up.
-    //
-    // A LINE IS DRAWN AS `transcript::shown` DRAWS IT: the time, then the
-    // message, where the log has a date, a time and a pid. The report's
-    // screen writes `10:03:36 done: ...` and it is right to. The full stamp
-    // is 28 characters, and at 50 columns -- with the label -- that leaves
-    // ten for the message and makes the pane a column of clocks. What is
-    // KEPT is still the line as ytq wrote it, so the comparison has something
-    // outside the program to be anchored to.
     let lines = t.tail(tr.max(0) as usize);
     let pad = (tr.max(0) as usize).saturating_sub(lines.len());
     for r in 0..tr {
@@ -630,8 +647,6 @@ pub fn frame_of(b: &Browser, (h, w): (i64, i64), colors: bool, v: &View) -> Fram
         let label = if r == 0 { "Transcript " } else { "           " };
         f.put(h - 1 - tr + r, 0, &cut(&format!(" {label}{text}"), w), dim);
     }
-    f.put(h - 1, 0, &cut(&format!(" {}", services::line_for(svcs, !v.shelf.is_empty())), w), dim);
-    f
 }
 
 /// Thousands separated by commas, as the report's screen writes a size.
@@ -858,7 +873,7 @@ pub fn main(argv: &[String]) -> ExitCode {
         _ => {}
     }
 
-    let Some((paths, home, s)) = settings::from_env() else {
+    let Some((paths, home, mut s)) = settings::from_env() else {
         eprintln!("sstr-workspace: no HOME");
         return ExitCode::FAILURE;
     };
@@ -970,6 +985,20 @@ pub fn main(argv: &[String]) -> ExitCode {
             // List or detail. With the other keys that move rather than among
             // the Services below, so no Service can ever take it.
             Key::Char('d') => detail = !detail,
+            // The settings, as a screen. Up here with the keys that are the
+            // Workspace's own rather than below with the Services, so no
+            // Service can take the comma -- and a comma because every letter
+            // worth having is either taken or about to be, and preferences
+            // have been behind a comma since vi.
+            //
+            // AND THE SETTINGS ARE READ AGAIN AFTER IT, because they are the
+            // map Services are built from: changing PLAYER in the screen and
+            // then pressing p has to reach the player just named, not the one
+            // that was named when the window opened.
+            Key::Char(',') => {
+                config::screen(&paths, &home, &keys, &mut screen, &mut t, colors);
+                s = settings::load(&paths, &home, &|k: &str| std::env::var(k).ok());
+            }
             // Space picks the selection up, or puts it back down.
             Key::Char(' ') => {
                 if !matches!(sel, Selection::Nothing) {

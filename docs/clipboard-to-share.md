@@ -130,6 +130,13 @@ One download can go the other way without editing anything:
     ytq --mp4 URL       this one kept as the file
     ytq --both URL      both
 
+And to change it for good, without opening an editor:
+
+    sstr config set OUTPUT both        ~/.config/copal/media.conf
+    sstr config                        every setting, and which file set it
+
+or **`,`** in the Workspace, which is the same commands with keys on them.
+
 ## 5. The file lands where the Mac can see it
 
 `DIR` defaults to `~/Downloads/SharedVM` **when that share is really mounted** —
@@ -204,7 +211,8 @@ A single capture, when that is all you want, is still:
 
     pgrep -af 'copal-clip bridge'        1. the clipboard wire is running
     wl-paste                             1. and the Mac's copy arrived
-    ytq --help | grep archive:           4. OUTPUT is what you think
+    sstr config                          4. every setting, and who set it
+    ytq --help | grep archive:           4. OUTPUT is what ytq will act on
     mountpoint /mnt/share                5. the share is really mounted
     ytq add 'https://www.youtube.com/watch?v=jNQXAC9IVRw' --run
     ls -l ~/Downloads/SharedVM           an .mp4 and a .txt, on the Mac too
