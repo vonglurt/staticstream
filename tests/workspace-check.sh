@@ -951,12 +951,29 @@ fi
 # -- it is the column underneath, one h away, because open_queue pushes rather
 # than replaces. Both halves are checked, since "it opened on the queue" is
 # worth little if the archive can no longer be reached.
+#
+# An entry of its own, rather than whatever earlier scenarios happen to have
+# left: by here the queue has been cleared and forgotten from several
+# directions, and a check that draws rows must be sure there are rows to draw.
+ytq_ add --no-run 'https://www.youtube.com/watch?v=DETAIL00000'
 if start 80x24; then
     if screen | sed -n '1p' | grep -q 'Archive'; then
         bad "S with no folder named it opened on the archive, not the queue"
     else
         ok "S with no folder named it does not open on the archive"
     fi
+    # d: list or detail. The mark is a detail line's four-space indent under
+    # its entry -- a column's content otherwise starts hard against its rule.
+    # NOT the middle dot that joins a detail line's parts: an entry with only
+    # a status has no second part and so no dot, which is most of a fresh
+    # queue. Checked both ways round, because a toggle watched in one
+    # direction passes while only ever turning on.
+    indented() { screen | grep -qE '\|    [a-z]'; }
+    if indented; then bad "S the queue showed detail lines before d was pressed"; else ok "S the queue starts in list mode"; fi
+    keys d
+    if indented; then ok "S d turns the queue to detail"; else bad "S d did not show the detail lines"; fi
+    keys d
+    if indented; then bad "S d did not turn detail back off"; else ok "S d turns detail off again"; fi
     keys h
     if screen | sed -n '1p' | grep -q 'Archive'; then ok "S h backs out to ARCHIVE_DIR from media.conf"; else bad "S h did not reach ARCHIVE_DIR"; fi
     stop

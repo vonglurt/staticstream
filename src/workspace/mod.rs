@@ -88,6 +88,7 @@ sstr-workspace -- the Workspace: a Browser over folders of streams
   left / h        back out      q / Esc             leave
   Space           pick the selection up onto the Shelf, or put it down
   Q               ytq's queue, as one more column to browse
+  d               list or detail: one line per queue entry, or two
 
 The Inspector shows the selection: for a capture, what `sstr verify` says
 about it, in the same words.
@@ -124,6 +125,12 @@ pub struct Entry {
     /// was built would be out of date before anyone looked at it. The URL is
     /// the name of a thing; the thing is read again when it is wanted.
     pub url: String,
+    /// The lines this entry shows in detail mode. Empty means it has nothing
+    /// more to say than its name, which is every folder and every file.
+    ///
+    /// Held rather than computed while drawing, because the queue is read
+    /// afresh each frame anyway and a frame should not be reading files.
+    pub detail: Vec<String>,
 }
 
 /// What a column is over.
@@ -219,8 +226,46 @@ pub fn queue_rows(paths: &Paths) -> Vec<Entry> {
             name: format!("{:<11} {}", queue::status(it), queue::title_or_url(it)),
             is_dir: false,
             url: queue::text(it, "url").to_string(),
+            detail: vec![queue::title_or_url(it).to_string(), queue_detail(it)],
         })
         .collect()
+}
+
+/// A queue entry's second line: what it is doing, or what it did.
+///
+/// Only the fields that are there. An entry that has not started has no
+/// progress and no file, and says nothing about either rather than saying
+/// none -- the same rule the Stats block follows.
+fn queue_detail(it: &crate::format::json::Value) -> String {
+    let mut bits: Vec<String> = vec![queue::status(it).to_string()];
+    for key in ["quality", "progress"] {
+        let v = queue::text(it, key);
+        if !v.is_empty() {
+            bits.push(v.to_string());
+        }
+    }
+    let file = queue::text(it, "file");
+    if !file.is_empty() {
+        bits.push(file.rsplit('/').next().unwrap_or(file).to_string());
+    }
+    let err = queue::text(it, "error");
+    if !err.is_empty() {
+        bits.push(err.chars().take(60).collect::<String>());
+    }
+    bits.join(" \u{b7} ")
+}
+
+/// How many screen lines one entry of this column takes.
+///
+/// Uniform within a column on purpose: entries of differing heights would mean
+/// the scroll and the selection could no longer be counted in entries, and the
+/// regularity is most of what makes a column readable.
+pub fn row_height(col: &Column, detail: bool) -> usize {
+    if detail && col.over == Over::Queue {
+        2
+    } else {
+        1
+    }
 }
 
 /// A folder's entries, in the order `ls` gives them: by name, bytewise, with
@@ -238,7 +283,7 @@ pub fn read_dir_sorted(dir: &Path) -> Vec<Entry> {
             }
             // A symlink to a folder is a folder here, as `ls -p` marks it.
             let is_dir = std::fs::metadata(e.path()).map(|m| m.is_dir()).unwrap_or(false);
-            Some(Entry { name, is_dir, url: String::new() })
+            Some(Entry { name, is_dir, url: String::new(), detail: Vec::new() })
         })
         .collect();
     out.sort_by(|a, b| a.name.as_bytes().cmp(b.name.as_bytes()));
@@ -399,6 +444,8 @@ pub struct View<'a> {
     pub services: &'a [Service],
     pub paths: &'a Paths,
     pub shelf: &'a [Selection],
+    /// List or detail: whether a queue entry gets a second line.
+    pub detail: bool,
 }
 
 /// What the Shelf row says.
@@ -491,18 +538,33 @@ pub fn frame_of(b: &Browser, (h, w): (i64, i64), colors: bool, v: &View) -> Fram
                 // Every column ends in a rule, the last one parting it from
                 // the Inspector, so the panes are told apart without box art.
                 let width = cw - 1;
-                if let Some(e) = col.entries.get(col.top + r as usize) {
+                // In detail mode a queue entry owns two screen rows, so the
+                // row being drawn no longer names the entry: it is divided by
+                // the column's row height to find one, and the remainder says
+                // which of that entry's lines this is.
+                let per = row_height(col, v.detail);
+                let idx = col.top + r as usize / per;
+                let sub = r as usize % per;
+                if let Some(e) = col.entries.get(idx) {
                     let marker = if e.is_dir { ">" } else { " " };
+                    let body = if per > 1 {
+                        // The lines under the first are indented, so the two
+                        // read as one entry rather than two.
+                        let line = e.detail.get(sub).map(String::as_str).unwrap_or("");
+                        if sub == 0 { line.to_string() } else { format!("    {line}") }
+                    } else {
+                        e.name.clone()
+                    };
                     // A file's name loses its middle so the extension stays;
                     // a queue row is a status and a title, with no extension
                     // to keep, so it is simply cut.
                     let shown = if col.over == Over::Queue {
-                        cut(&e.name, width - 3)
+                        cut(&body, width - 3)
                     } else {
-                        elide(&e.name, width - 3)
+                        elide(&body, width - 3)
                     };
-                    let text = format!("{} {}", ljust(&shown, width - 3), marker);
-                    let selected = col.top + r as usize == col.sel;
+                    let text = format!("{} {}", ljust(&shown, width - 3), if sub == 0 { marker } else { " " });
+                    let selected = idx == col.sel;
                     let style = if selected && i == deepest {
                         Style { reverse: true, ..Style::default() }
                     } else if selected {
@@ -857,6 +919,9 @@ pub fn main(argv: &[String]) -> ExitCode {
     let mut last_size = None;
     // What Services left running, so their ends are said and reaped.
     let mut running: Vec<(String, Child)> = Vec::new();
+    // List until asked otherwise: one line per entry is what ytq's window
+    // showed, and it is the mode that fits the most queue on a screen.
+    let mut detail = false;
     // THE SHELF IS KEPT IN MEMORY, for as long as the window is open. A file
     // of it would be the one thing this Workspace has refused all the way
     // through: something to keep in step with the folders, going stale the
@@ -878,7 +943,8 @@ pub fn main(argv: &[String]) -> ExitCode {
         }
         last_size = Some((h, w));
         let rows = (h as i64 - 3 - transcript_rows(h as i64)) - 3 + 1;
-        scroll(b.last_mut(), rows);
+        let per = row_height(b.last(), detail) as i64;
+        scroll(b.last_mut(), rows / per.max(1));
         // The selection's Services: what the foot of the window offers, and
         // what a key sends. Built once a frame, so the two cannot disagree
         // about what `p` means.
@@ -887,7 +953,7 @@ pub fn main(argv: &[String]) -> ExitCode {
         // Shelf when anything is on it, else the selection.
         let to = targets(&shelf, &sel);
         let svcs = services_for_all(&to, &s);
-        let view = View { home: &home, transcript: &t, services: &svcs, paths: &paths, shelf: &shelf };
+        let view = View { home: &home, transcript: &t, services: &svcs, paths: &paths, shelf: &shelf, detail };
         let frame = frame_of(&b, (h as i64, w as i64), colors, &view);
         let _ = screen.present(&frame, (h, w));
 
@@ -901,6 +967,9 @@ pub fn main(argv: &[String]) -> ExitCode {
             // The Queue, as one more object to browse. Shift-Q, because q
             // leaves and a queue is not worth losing a window over.
             Key::Char('Q') => b.open_queue(&paths),
+            // List or detail. With the other keys that move rather than among
+            // the Services below, so no Service can ever take it.
+            Key::Char('d') => detail = !detail,
             // Space picks the selection up, or puts it back down.
             Key::Char(' ') => {
                 if !matches!(sel, Selection::Nothing) {
@@ -948,7 +1017,7 @@ mod tests {
     /// A View over a throwaway home, with nothing shelved: the frame tests
     /// are about the frame.
     fn view_of<'a>(d: &'a Path, t: &'a Transcript, paths: &'a Paths) -> View<'a> {
-        View { home: d, transcript: t, services: &[], paths, shelf: &[] }
+        View { home: d, transcript: t, services: &[], paths, shelf: &[], detail: false }
     }
 
     /// ytq's paths under a throwaway home, so nothing here can see the real
