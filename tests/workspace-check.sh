@@ -619,15 +619,40 @@ if start "${VW}x${VH}" "$A"; then
         bad "V could not select $AWKWARD"
     fi
 
-    # -- A folder is opened, not sent a verb --
+    # -- A folder of captures is sent Export all; any other folder, nothing --
+    #
+    # Open is still the Right arrow and not a Service. The one verb a folder
+    # understands is the bulk one, because a folder of captures is what ytq
+    # fills and getting them all back out was a shell loop people retyped.
+    # SharedVM holds one capture and so is offered it; Notes holds none and is
+    # offered nothing, which is the half that says the verb is not merely
+    # printed on everything with a slash in it.
     if select_name "SharedVM"; then
-        if screen | sed -n "${VH}p" | grep -q 'nothing to send'; then
-            ok "V a folder is offered no Services"
+        line=$(screen | sed -n "${VH}p")
+        if printf '%s' "$line" | grep -q 'X Export all 1'; then
+            ok "V a folder of captures is offered Export all, counted"
         else
-            bad "V a folder was offered Services: $(screen | sed -n "${VH}p")"
+            bad "V the folder of captures was offered: $line"
+        fi
+        keys X; sleep 0.8
+        got=$(on_the_terminal "sstr export '$A/SharedVM'")
+        if [ -n "$got" ]; then
+            ok "V the line Export all printed is sstr export on the folder"
+        else
+            bad "V Export all did not print sstr export on the folder"
+        fi
+        keys Enter; sleep 0.8
+    else
+        bad "V could not select the folder of captures"
+    fi
+    if select_name "Notes"; then
+        if screen | sed -n "${VH}p" | grep -q 'nothing to send'; then
+            ok "V a folder with no capture in it is offered no Services"
+        else
+            bad "V an empty folder was offered Services: $(screen | sed -n "${VH}p")"
         fi
     else
-        bad "V could not select the folder"
+        bad "V could not select the folder with no captures"
     fi
     stop
 else

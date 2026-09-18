@@ -27,6 +27,7 @@ use staticstream::format::json::{self, Value};
 use staticstream::format::reader::{self, Erasures, Reader, Source};
 use staticstream::format::sha256::{hex, Sha256};
 use staticstream::format::writer::{self, Writer};
+use staticstream::ytq::live::fmt_size;
 use staticstream::tty::{self as tty, Unarmor};
 
 const USAGE: &str = "\
@@ -41,6 +42,7 @@ sstr -- Static Stream: record a stream into a file, and play it back as one
                [--gap skip|zero] [--erasures FILE] [--allowed-signers FILE] [-v]
   sstr play IN --serve [HOST]:PORT [--paced] [--follow] [--once]
   sstr verify IN [--erasures FILE] [--allowed-signers FILE] [-v]
+  sstr export PATH... [--into DIR] [-r] [-n] [--force] [--remove] [-q]
   sstr armor [IN] [--baud N] [--flush-ms N]
   sstr unarmor [IN] [--erasures FILE]
   sstr recv [IN] [--verify] [--paced] [--speed N] [--gap skip|zero]
@@ -48,6 +50,8 @@ sstr -- Static Stream: record a stream into a file, and play it back as one
   sstr paths
 
 IN and OUT may be - for stdin and stdout. `write` is another name for record.
+A PATH given to export may be a capture or a folder of them: `sstr export .`
+writes every .sstr in this folder back out as the file it holds.
 ";
 
 // ------------------------------------------------------------- arguments ---
@@ -64,6 +68,10 @@ impl Args {
         let alias = |s: &str| match s {
             "-o" => "--output".to_string(),
             "-v" => "--verbose".to_string(),
+            "-C" => "--into".to_string(),
+            "-r" => "--recursive".to_string(),
+            "-n" => "--dry-run".to_string(),
+            "-q" => "--quiet".to_string(),
             other => other.to_string(),
         };
         let mut a = Args { pos: Vec::new(), opts: HashMap::new(), flags: Vec::new() };
@@ -383,6 +391,184 @@ fn cmd_verify(raw: &[String]) -> Result<i32, String> {
     Ok(r.status())
 }
 
+/// Every `.sstr` under `dir`, by name. `.part` files are a half-written
+/// capture or a half-written export and belong to whatever is writing them.
+fn captures_in(dir: &std::path::Path, recursive: bool, out: &mut Vec<PathBuf>) {
+    let Ok(entries) = std::fs::read_dir(dir) else { return };
+    let mut here: Vec<PathBuf> = Vec::new();
+    let mut under: Vec<PathBuf> = Vec::new();
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.is_dir() {
+            if recursive {
+                under.push(p);
+            }
+        } else if p.extension().map_or(false, |x| x.eq_ignore_ascii_case("sstr")) {
+            here.push(p);
+        }
+    }
+    here.sort();
+    under.sort();
+    out.append(&mut here);
+    for d in under {
+        captures_in(&d, recursive, out);
+    }
+}
+
+/// `sstr export PATH...`: each capture written back out as the file it holds.
+///
+/// **BULK IS THE WHOLE POINT, AND SO IS NOT DESTROYING ANYTHING.** `sstr play
+/// cap.sstr -o cap.mp4` already gets one capture out; what a folder of them
+/// needs is the name chosen for it, the existing file left alone, and a
+/// tally at the end -- three things a shell loop gets wrong in a different
+/// way each time it is retyped. So:
+///
+/// - **The name comes from the capture**, not from the caller: the header's
+///   `content_type` through [`extension_for`], which is the same answer the
+///   Workspace's Export key gives, because it is the same function.
+/// - **A file that is already there is skipped, and counted.** Not
+///   overwritten, and not quietly renamed to `-1` either: in bulk, a
+///   surprise copy is as bad as a surprise overwrite. `--force` overwrites
+///   and says so.
+/// - **The payload lands in `NAME.part` and is renamed only once the
+///   capture has verified.** A damaged capture still has its recovered bytes
+///   worth keeping, so the `.part` stays, named in the report -- but nothing
+///   that did not check out is ever left wearing a name that says it did.
+/// - **`--remove` is the only way a capture is deleted**, it happens only
+///   after that verified rename, and it is never the default.
+fn cmd_export(raw: &[String]) -> Result<i32, String> {
+    let a = Args::parse(raw, &["--into", "--allowed-signers"])?;
+    a.check_flags(&["--recursive", "--dry-run", "--force", "--remove", "--quiet", "--verbose"])?;
+    if a.pos.is_empty() {
+        return Err("export needs PATH: a .sstr, or a folder of them".into());
+    }
+    let (dry, force, remove, quiet) = (a.flag("--dry-run"), a.flag("--force"), a.flag("--remove"), a.flag("--quiet"));
+    let into = a.get("--into").map(PathBuf::from);
+    if let Some(d) = &into {
+        if !dry {
+            std::fs::create_dir_all(d).map_err(|e| format!("{}: {e}", d.display()))?;
+        }
+    }
+
+    let mut caps: Vec<PathBuf> = Vec::new();
+    for p in &a.pos {
+        let path = PathBuf::from(p);
+        if path.is_dir() {
+            captures_in(&path, a.flag("--recursive"), &mut caps);
+        } else if path.exists() {
+            caps.push(path);
+        } else {
+            return Err(format!("{p}: not there"));
+        }
+    }
+    if caps.is_empty() {
+        eprintln!("sstr export: no captures found");
+        return Ok(0);
+    }
+
+    let (mut done, mut skipped, mut failed, mut bytes) = (0u64, 0u64, 0u64, 0u64);
+    let mut freed = 0u64;
+    for cap in &caps {
+        let name = cap.file_name().map(|n| n.to_string_lossy().into_owned()).unwrap_or_default();
+        let ct = reader::read_meta(cap).and_then(|m| m.get("content_type").and_then(|v| v.as_str()).map(str::to_string));
+        let ext = staticstream::workspace::services::extension_for(ct.as_deref());
+        let stem = cap.file_stem().map(PathBuf::from).unwrap_or_else(|| PathBuf::from("capture"));
+        let dir = into.clone().or_else(|| cap.parent().map(PathBuf::from)).unwrap_or_else(|| PathBuf::from("."));
+        let target = dir.join(stem).with_extension(ext);
+
+        if target.exists() && !force {
+            skipped += 1;
+            if !quiet {
+                println!("skip    {name}  ->  {} is already there", target.display());
+            }
+            continue;
+        }
+        if dry {
+            let n = std::fs::metadata(cap).map(|m| m.len()).unwrap_or(0);
+            bytes += n;
+            done += 1;
+            println!("would   {name}  ->  {} ({}, from a {} capture)", target.display(), ct.as_deref().unwrap_or("capture that does not say"), fmt_size(n as f64));
+            continue;
+        }
+
+        let part = target.with_extension(format!("{ext}.part"));
+        let result = (|| -> Result<(i32, u64, String), String> {
+            let out: Box<dyn Write> = Box::new(File::create(&part).map_err(|e| format!("{}: {e}", part.display()))?);
+            let src = Source::new(File::open(cap).map_err(|e| format!("{}: {e}", cap.display()))?, false, Rc::new(RefCell::new(Erasures::new())));
+            let opts = reader::Options { allowed_signers: a.get("--allowed-signers").map(PathBuf::from), ..Default::default() };
+            let mut r = Reader::new(src, Some(out), opts);
+            r.run().map_err(|e| e.to_string())?;
+            Ok((r.status(), r.s.bytes, r.summary()))
+        })();
+        match result {
+            Ok((0, n, _)) => {
+                if let Err(e) = std::fs::rename(&part, &target) {
+                    let _ = std::fs::remove_file(&part);
+                    failed += 1;
+                    println!("FAILED  {name}: cannot rename to {}: {e}", target.display());
+                    continue;
+                }
+                done += 1;
+                bytes += n;
+                if !quiet {
+                    println!("export  {name}  ->  {} ({})", target.display(), fmt_size(n as f64));
+                }
+                if remove {
+                    let was = std::fs::metadata(cap).map(|m| m.len()).unwrap_or(0);
+                    match std::fs::remove_file(cap) {
+                        Ok(()) => {
+                            freed += was;
+                            if !quiet {
+                                println!("        removed {name}: the file it held is written");
+                            }
+                        }
+                        Err(e) => println!("        {name} stays: {e}"),
+                    }
+                }
+            }
+            // Nothing came out at all, which is what a file that is not a
+            // capture looks like from here -- `sstr export` given a .txt by
+            // name, since folder discovery only ever offers it .sstr files.
+            // An empty .part is litter rather than recovered bytes, so it
+            // goes, and the report says the honest thing instead of calling
+            // a text file damaged.
+            Ok((_, 0, _)) => {
+                let _ = std::fs::remove_file(&part);
+                failed += 1;
+                println!("FAILED  {name}: not a capture -- nothing in it reads as a Static Stream");
+            }
+            Ok((_, _, summary)) => {
+                failed += 1;
+                println!("DAMAGED {name}: it does not verify, so what came out is {} and keeps the .part name", part.display());
+                for line in summary.lines().filter(|l| l.starts_with("lost") || l.starts_with("payload") || l.starts_with("checkpoints") || l.starts_with("signatures")) {
+                    println!("        {line}");
+                }
+            }
+            Err(why) => {
+                let _ = std::fs::remove_file(&part);
+                failed += 1;
+                println!("FAILED  {name}: {why}");
+            }
+        }
+    }
+    // In a dry run `bytes` is what the captures weigh, because the payload's
+    // size is in the end record and reading that is the work the run is
+    // declining to do; the wording says which number it is rather than
+    // letting one total stand for two different things.
+    let tally = if dry {
+        format!("{done} to write, from {} of captures", fmt_size(bytes as f64))
+    } else {
+        format!("{done} written, {}", fmt_size(bytes as f64))
+    };
+    eprintln!(
+        "sstr export: {} capture{}; {tally}, {skipped} already there, {failed} failed{}",
+        caps.len(),
+        if caps.len() == 1 { "" } else { "s" },
+        if freed > 0 { format!(", {} freed", fmt_size(freed as f64)) } else { String::new() }
+    );
+    Ok(if failed > 0 { 1 } else { 0 })
+}
+
 fn cmd_armor(raw: &[String]) -> Result<i32, String> {
     let a = Args::parse(raw, &["--baud", "--flush-ms"])?;
     a.check_flags(&[])?;
@@ -580,6 +766,7 @@ fn main() -> ExitCode {
         Some("record" | "write") => cmd_record(rest),
         Some("play") => cmd_play(rest),
         Some("verify") => cmd_verify(rest),
+        Some("export") => cmd_export(rest),
         Some("armor") => cmd_armor(rest),
         Some("unarmor") => cmd_unarmor(rest),
         Some("recv") => cmd_recv(rest),

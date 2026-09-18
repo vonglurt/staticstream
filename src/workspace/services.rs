@@ -113,12 +113,24 @@ pub fn content_type(path: &Path) -> Option<String> {
 /// What a payload of this type should be called once it is out of the
 /// capture. Only the types the project actually makes are named; anything
 /// else is `bin`, which is honest about not knowing.
+///
+/// **EVERY TYPE `runner::content_type` CAN WRITE MUST BE NAMED HERE**, and
+/// four of them were not: a `.webm` download -- which is what yt-dlp leaves
+/// whenever the MP4 ladder in FORMAT has nothing to offer, and a fifth of
+/// this machine's captures are -- recorded as `video/webm` and came back out
+/// of Export called `.bin`. The two lists are the same list read in opposite
+/// directions, so a type added to one belongs in the other; the test below
+/// walks `content_type`'s own table to say so.
 pub fn extension_for(content_type: Option<&str>) -> &'static str {
     match content_type.unwrap_or("") {
         "video/mp4" => "mp4",
+        "video/webm" => "webm",
+        "video/x-matroska" => "mkv",
+        "video/quicktime" => "mov",
         "video/mp2t" => "ts",
         "audio/mpeg" => "mp3",
         "audio/mp4" => "m4a",
+        "audio/ogg" => "opus",
         t if t.starts_with("text/") => "txt",
         "application/json" => "json",
         _ => "bin",
@@ -164,11 +176,25 @@ fn ext_of(path: &Path) -> String {
     path.extension().map(|e| e.to_string_lossy().to_lowercase()).unwrap_or_default()
 }
 
+/// How many captures a folder holds, looking no further than the folder
+/// itself. Only whether there are any and roughly how many matters here, and
+/// a Browser that redraws on every arrow key must not walk a tree to find out.
+fn captures_in(dir: &Path) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else { return 0 };
+    entries.flatten().filter(|e| ext_of(&e.path()) == "sstr" && !e.path().is_dir()).count()
+}
+
 /// The Services the selection can be sent, in the order the report's Services
 /// line lists them.
 ///
-/// **A folder gets none.** The message a folder understands is Open, and the
-/// Browser already sends it with Right.
+/// **A folder gets one, and only when it has earned it.** Open is still the
+/// Browser's Right arrow and not a Service. But a folder of captures is the
+/// thing a person actually has -- ytq fills one -- and "get all of these back
+/// out as files" was a shell loop everybody wrote for themselves and half of
+/// them wrote wrong. It is `sstr export DIR`, which is one line a person
+/// could have typed, so it is a Service like any other. A folder with no
+/// capture in it still gets none: a verb offered where it would do nothing
+/// is a verb that has to be tried to be understood.
 pub fn services_for(sel: &Selection, s: &BTreeMap<String, String>) -> Vec<Service> {
     // A QUEUE ENTRY'S VERBS ARE ytq'S OWN COMMANDS. Retry and Forget were
     // keys in ytq's window and nothing else; rather than invent a line no
@@ -184,7 +210,23 @@ pub fn services_for(sel: &Selection, s: &BTreeMap<String, String>) -> Vec<Servic
     }
     let Some(p) = sel.file() else { return Vec::new() };
     if p.is_dir() {
-        return Vec::new();
+        let n = captures_in(p);
+        if n == 0 {
+            return Vec::new();
+        }
+        // NOT `free_name` here, and that is the difference between one file
+        // and a folder of them. Export on a capture picks a name nothing is
+        // using, because one keypress must not destroy one file. Export all
+        // cannot do that: sidestepping onto `-1` names in bulk would quietly
+        // build a second copy of a folder somebody has already exported.
+        // `sstr export` skips what is already there and says how many it
+        // skipped, which is the answer that scales.
+        return vec![Service {
+            key: 'X',
+            name: format!("Export all {n}"),
+            line: format!("sstr export {}", quote(&p.to_string_lossy())),
+            how: How::Terminal,
+        }];
     }
     let f = quote(&p.to_string_lossy());
     let mut v = Vec::new();
@@ -320,6 +362,45 @@ mod tests {
         assert_eq!(extension_for(Some("text/vtt")), "txt");
         assert_eq!(extension_for(Some("application/octet-stream")), "bin");
         assert_eq!(extension_for(None), "bin");
+    }
+
+    /// The two tables are one list read in both directions. `content_type`
+    /// says what a downloaded file is recorded as; `extension_for` says what
+    /// comes back out. A type in the first that the second does not know
+    /// exports as `.bin`, which is how a folder of `.webm` downloads came
+    /// back out unplayable.
+    #[test]
+    fn every_type_ytq_records_has_a_name_to_come_back_out_under() {
+        for name in ["a.mp4", "a.m4v", "a.webm", "a.mkv", "a.mov", "a.m4a", "a.mp3", "a.opus", "a.ogg"] {
+            let ct = crate::ytq::runner::content_type(name);
+            assert_ne!(
+                extension_for(Some(ct)),
+                "bin",
+                "ytq records {name} as {ct}, and Export would call it .bin"
+            );
+        }
+        // The one place the round trip is deliberately lossy: .opus and .ogg
+        // are both audio/ogg going in, and audio/ogg is .opus coming out,
+        // because that is the one of the two ytq's FORMAT can leave.
+        assert_eq!(extension_for(Some(crate::ytq::runner::content_type("a.ogg"))), "opus");
+        // And what the project does not make is still honestly `bin`.
+        assert_eq!(extension_for(Some("application/octet-stream")), "bin");
+    }
+
+    #[test]
+    fn a_folder_of_captures_can_be_sent_export_all() {
+        let d = scratch("dir");
+        let s = settings(&[]);
+        assert!(services_for(&Selection::File(d.clone()), &s).is_empty(), "an empty folder gets no verb");
+        std::fs::write(d.join("notes.txt"), b"not a capture").unwrap();
+        assert!(services_for(&Selection::File(d.clone()), &s).is_empty(), "a folder with no capture gets none either");
+        std::fs::write(d.join("one.sstr"), b"x").unwrap();
+        std::fs::write(d.join("two.sstr"), b"x").unwrap();
+        let v = services_for(&Selection::File(d.clone()), &s);
+        let x = by_key(&v, 'X').unwrap();
+        assert_eq!(x.name, "Export all 2");
+        assert_eq!(x.line, format!("sstr export {}", quote(&d.to_string_lossy())));
+        let _ = std::fs::remove_dir_all(&d);
     }
 
     #[test]
