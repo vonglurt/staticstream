@@ -513,7 +513,7 @@ which is the check doing precisely the job it exists for.
 |---|---|---|
 | `DIR` | `~/Downloads/SharedVM` | **the one line that was typed** |
 | `ARCHIVE_DIR` | `~/Downloads/SharedVM` | unset → falls back to `DIR` |
-| `OUTPUT` | `sstr` | unset → the built-in fallback |
+| `OUTPUT` | `mp4` | `~/.config/copal/media.conf`, which Copal now installs |
 | `SSTR_KEY` | `~/.ssh/id_ed25519` | unset → the key that exists |
 | `SUBS` | `en,en-orig,en-US,en-GB` | default |
 | `COMMENTS` | `200` | unset → the built-in fallback |
@@ -529,9 +529,23 @@ queue, notifies as each file finishes, and leaves when the queue is empty.
 Nothing has to be run by hand. **That one empty file is the difference
 between a queue and an appliance.**
 
-`OUTPUT` is unset and its fallback is `sstr`. That is why MP4s stop
-appearing: every download is recorded into a capture, read back, verified
-against the original's SHA-256, and only then is the MP4 removed.
+`OUTPUT` **was** unset, and its fallback is `sstr`: every download was
+recorded into a capture, read back, verified against the original's SHA-256,
+and only then was the MP4 removed. That is why MP4s stopped appearing — and
+also why, on a folder whose whole purpose is that a Mac reads it over 9p, it
+was the wrong default for this machine. A `.sstr` is not a file a player
+opens, and a share full of them looks empty to everything but `sstr`.
+
+So `OUTPUT=mp4` now comes from `~/.config/copal/media.conf`, which
+`install_ytq` in copal-prep.sh writes through `install_home_once` — created
+once, never written again, the user's from then on. The crate's own default
+is still `sstr`, and that is not a contradiction: **the archive default and
+the desktop default are answers to different questions**, and the one that
+belongs to the machine is written where the machine's owner can see it.
+
+Nothing is stranded in either direction. `sstr export DIR` writes a folder of
+captures back out as the files they hold; `ytq --sstr URL` keeps one download
+as a capture without editing anything.
 
 ### What lands on disk
 
@@ -539,13 +553,21 @@ against the original's SHA-256, and only then is the MP4 removed.
 folder the Mac also sees. One download leaves **two files**:
 
 ```
-Author-Title_ID.sstr     the capture: the video, its FEC, its chain, signed
+Author-Title_ID.mp4      the video, with the notes in its metadata
 Author-Title_ID.txt      the reference card, the description, the transcript
 ```
 
-and, on an x.com post today, **one** — the `.sstr` alone, because the `.txt`
-is still gated behind the YouTube-only transcript step. That is the gap
-phase 5 closes.
+— or `.sstr` in place of the `.mp4` under `OUTPUT=sstr`, and both under
+`both`. The `.txt` is owed to **every** download and no longer only to a
+YouTube one: the notes cost no second yt-dlp run at all, since the metadata
+is already in hand from the run that has just finished, and only the captions
+need a YouTube video and a `SUBS` list. That was phase 5's gap and it is
+closed.
+
+Its Notes block names where a post came from in whichever way its site means
+it — `r/SUBREDDIT` for Reddit, the `@handle` for x.com, the channel for
+YouTube when that is not simply the uploader's name again — along with the
+site, how long the thing runs, and, on Reddit alone, the downvotes it gives.
 
 Names carry the first word of the uploader, the title and the id, in the
 URL-safe base64 alphabet and nothing else. Observed in that folder now: 26
@@ -556,13 +578,30 @@ archiving was in effect, in 24 GB.
 
 | `OUTPUT` | Leaves | For |
 |---|---|---|
-| `sstr` | the capture and the text | the archive, and the default |
+| `sstr` | the capture and the text | the archive, and the crate's default |
 | `both` | the capture, the MP4, and the text | keeping something every player opens |
-| `mp4` | the MP4 and nothing else | turning all of this off |
+| `mp4` | the MP4 and the text | a share another machine reads — what Copal installs |
 
 **If what is wanted is "the file, plus its text, plus the archive", that is
-`OUTPUT=both`** — one line in `~/.config/ytq/config`, and the MP4 stops being
-deleted. Nothing else changes.
+`OUTPUT=both`** — one line in `~/.config/ytq/config`, and neither is deleted.
+Nothing else changes.
+
+Three ways to decide it, in the order they are read:
+
+```
+~/.config/copal/media.conf   OUTPUT=mp4     sstr, ytq and the Workspace
+~/.config/ytq/config         OUTPUT=both    ytq alone, and it wins
+ytq --sstr URL                              this one download, and it wins over both
+```
+
+And the fourth, for a decision already made the other way:
+
+```
+sstr export DIR              every capture in a folder, back out as its file
+```
+
+which is the Workspace's **X** on a folder, and is why `OUTPUT` is a choice
+rather than a commitment.
 
 ### One risk worth writing down
 
@@ -590,8 +629,8 @@ nothing else while the share is up.
 | `ytq-runner-crosscheck` | downloads, stops, cookies, retries, transcripts | 50 |
 | `ytq-archive-check` | `OUTPUT`, `ARCHIVE_DIR`, `SSTR_KEY` | 34 |
 | `ytq-window-crosscheck` | the window beside the Python one, in tmux | 133 |
-| `workspace-check` | the Browser's columns against `ls`, the keys, the frame | 63 |
-| | **total** | **382** |
+| `workspace-check` | the Browser's columns against `ls`, the keys, the frame | 70 |
+| | **total** | **389** |
 
 **Two specifications, both frozen, both Python**: `tests/reference/copal-sstr.py`
 for the format at version 0, and `tests/reference/ytq.py` for the queue, the

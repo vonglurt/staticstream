@@ -30,9 +30,9 @@ line of it here, and retired that one.
 
 ## Status: phases 0–3 done, phase 4 all but two runs
 
-`make check` is **382 checks** and **124 unit tests**, and passes with nothing
+`make check` is **389 checks** and **136 unit tests**, and passes with nothing
 installed but `cargo`: 44 comparisons against the Python prototype, 26 of
-version 1's outer code, 32 + 50 + 34 + 133 across ytq, and 63 of the
+version 1's outer code, 32 + 50 + 34 + 133 across ytq, and 70 of the
 Workspace. Clone it and run `make check` — it needs no second checkout, no
 network and no crates.
 
@@ -133,7 +133,9 @@ Step 2c is done: what ytq downloads, it keeps as Static Stream.
 - **`OUTPUT`:** `sstr` (the default) records the MP4 into a `.sstr`, reads
   it back, and removes the MP4 only once the capture verifies and its
   payload's SHA-256 is the MP4's. `both` keeps both; `mp4` keeps what the
-  Python ytq keeps, and asks yt-dlp nothing more.
+  Python ytq keeps, and asks yt-dlp nothing more. `ytq --sstr`, `--mp4` and
+  `--both` set it for one command, the way `--run` and `--no-run` already
+  set autostart for one command.
 - **`ARCHIVE_DIR`:** where captures and their transcripts go; `DIR` when unset.
 - **`SSTR_KEY`:** the key captures are signed with; `~/.ssh/id_ed25519` when
   unset and present; `SSTR_KEY=` for unsigned.
@@ -201,6 +203,37 @@ the Python ytq is retired.
 44 + 32 + 50 comparisons, 34 checks and 133 comparisons -- **293 in all**.
 Run by hand, `make ytq-crosscheck` and the rest take their default and
 exercise `sstr ytq` instead, so both spellings stay covered.
+
+## Getting a folder of captures back out
+
+`sstr export` is the bulk half of `sstr play IN -o FILE`: a folder in, the
+files the captures hold out.
+
+```
+sstr export DIR                  every .sstr in DIR
+sstr export DIR -r               and every folder under it
+sstr export DIR -n               what it would do, writing nothing
+sstr export DIR --into ELSEWHERE write the files somewhere else
+sstr export DIR --remove         delete each capture once its file is
+                                 written and verified
+sstr export A.sstr B.sstr        named captures, as well as folders
+```
+
+The name comes from the capture's own header — its `content_type` decides
+`.mp4`, `.webm`, `.mkv`, `.m4a`, `.txt` — which is the same answer the
+Workspace's Export key gives, because it is the same function. A file already
+there is skipped and counted, never overwritten and never quietly renamed to
+a `-1` name. Nothing is renamed to the real name until the capture has
+verified: a damaged capture's recovered bytes stay as `NAME.part` with the
+damage counts printed under them, and the exit status is 1.
+
+In the Workspace, **X** on a folder is that command line, printed into the
+Transcript before it runs.
+
+**[docs/clipboard-to-share.md](docs/clipboard-to-share.md)** is the short
+guide to the workflow this exists for: a URL copied on the Mac, through the
+SPICE clipboard, into ytq's queue, and out as a file on the folder the Mac
+shares with the guest.
 
 ## Install
 

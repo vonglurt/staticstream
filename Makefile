@@ -111,8 +111,30 @@ workspace-check: ## the Workspace's Browser in tmux: the columns against ls, the
 # /usr/local/bin on Copal's PATH, so this is the ytq that Super+Shift+Y and
 # every `ytq` typed in a shell now reach. One crate, so one install: it puts
 # sstr, ytq and sstr-workspace there together.
+# --force, AND IT IS NOT A SHRUG. cargo records which package owns each
+# installed binary, and until the release this crate WAS three packages --
+# staticstream-cli, -ytq and -workspace, one per binary. ba7ec84 collapsed them
+# into one crate named after the repository; what it could not reach was
+# $(ROOT)/.crates.toml on machines that had already installed the old three.
+# Those machines still read
+#
+#     binary `sstr` already exists in destination as part of
+#     `staticstream-cli v0.1.0 (.../crates/staticstream-cli)`
+#
+# and refuse, naming three package directories that no longer exist. So the
+# conflict being overridden here is THIS CRATE'S OWN FORMER NAMES, and cargo
+# says as much when it resolves it -- "Replaced package staticstream-cli with
+# staticstream" -- after which the registry holds one entry and the flag has
+# nothing left to do. It is kept because the machine that has not run it yet
+# is the one that needs it, and because `make install` from a path checkout
+# means "install what I just built", which is what --force means.
+#
+# ON COPAL THIS IS NOT THE INSTALLER. copal-build symlinks target/release into
+# ~/.local/bin, so a rebuild is live with no install step at all; cargo copies
+# instead, and a copy goes stale the next time you build. Whichever ran last
+# wins, harmlessly, and `copal-build staticstream` puts the symlinks back.
 install: ## sstr, ytq and sstr-workspace into ~/.local/bin (ROOT=DIR for DIR/bin)
-	$(CARGO) install --locked --offline --root $(ROOT) --path .
+	$(CARGO) install --locked --offline --force --root $(ROOT) --path .
 
 tools: ## what `make dist` needs for the targets that are not this machine
 	@printf 'make dist builds THIS machine with nothing but cargo. The other\n'
