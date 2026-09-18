@@ -12,7 +12,7 @@ Five parts, each of which works alone and is worth checking alone:
 
 | | | |
 |---|---|---|
-| 1 | the clipboard crosses | `copal-vmclip`, over SPICE |
+| 1 | the clipboard crosses | `copal-clip bridge`, over SPICE |
 | 2 | a URL in the clipboard is queued | `ytq`, or Super+Shift+Y |
 | 3 | the queue downloads | one runner, one file at a time |
 | 4 | what it leaves is a **file**, not a capture | `OUTPUT=mp4` |
@@ -22,23 +22,44 @@ Five parts, each of which works alone and is worth checking alone:
 
 ## 1. The clipboard crosses
 
-UTM shares a clipboard over SPICE. The guest half is two programs: the root
-daemon `spice-vdagentd`, which owns the virtio port, and the per-session
-`spice-vdagent`, which is X11-only — and Copal's desktop is Wayland. So
-`copal-vmclip` starts the client against Xwayland and relays text between the
-Wayland clipboard and the X one, both ways. Hyprland's `exec-once` starts it.
+UTM shares a clipboard over SPICE, and on a Wayland desktop that takes **two**
+programs, not one.
 
-    rc-service spice-vdagentd status     # the daemon: must be running
-    rc-update add spice-vdagentd         # and at boot
-    copal-vmclip -d                      # by hand, to watch it work
+`spice-vdagent` is an X11 program — "Spice session guest agent: X11" is its own
+version banner — so it reads the selection off an X server and needs a
+`DISPLAY`. Hyprland's Xwayland provides one. But vdagent shares the *Xwayland*
+selection, and Hyprland does not mirror that to the Wayland one, so on its own
+the host's clipboard reaches `xterm` and nothing else. **`copal-clip bridge` is
+the wire between the two.**
+
+Hyprland starts both from `exec-once`, each guarded on the SPICE port existing
+and each waiting up to thirty seconds for Xwayland to bind its socket —
+`exec-once` fires before it has, and an agent started that early gives up with
+"Screen count is zero, are we on wayland?" and never retries.
+
+    copal-clip copy | cut | paste     Super+C / Super+X / Super+V
+                                      (also Ctrl+Alt+C / X / V)
+    copal-clip history                Super+Ctrl+V — the picker
+    copal-clip bridge                 the VM host wire, started by the session
+    copal-clip watch                  records the history, started by the session
 
 Copy on the Mac, **Super+V** in the guest. Copy in the guest with **Super+C**,
-**Cmd+V** on the Mac. Text only. On a machine that is not a SPICE guest,
-`copal-vmclip` exits at once and silently, so it is safe to start anywhere.
+**Cmd+V** on the Mac. Text only.
 
-If nothing crosses, it is almost always the daemon rather than the relay:
-`/dev/virtio-ports/com.redhat.spice.0` must exist and
-`/run/spice-vdagentd/spice-vdagent-sock` must be a socket.
+To check it, in this order — each answers a different failure:
+
+    ls /dev/virtio-ports/com.redhat.spice.0    the guest is a SPICE guest
+    rc-service spice-vdagentd status           the root daemon is up
+    rc-update show | grep spice                ...and comes back at boot
+    pgrep -af 'spice-vdagent -x'               the X11 session client
+    pgrep -af 'copal-clip bridge'              the wire to Wayland
+    wl-paste                                   what actually arrived
+
+If the port is missing this is not a SPICE guest and nothing else matters. If
+the daemon is down, `rc-service spice-vdagentd start` and
+`rc-update add spice-vdagentd`. If both are up and only `bridge` is missing,
+the Wayland side is the half that is broken, and that is the one that makes
+Super+V look like it does nothing.
 
 ## 2. A URL in the clipboard is queued
 
@@ -181,7 +202,7 @@ A single capture, when that is all you want, is still:
 
 ## Checking the whole chain
 
-    copal-vmclip -d                      1. the clipboard relay is running
+    pgrep -af 'copal-clip bridge'        1. the clipboard wire is running
     wl-paste                             1. and the Mac's copy arrived
     ytq --help | grep archive:           4. OUTPUT is what you think
     mountpoint /mnt/share                5. the share is really mounted
