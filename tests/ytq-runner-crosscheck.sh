@@ -93,7 +93,7 @@ collect() { # <scenario> <side> <home>
     s=$1 side=$2 h=$3
     sed -E -e "s|$h|HOME|g" -e 's/^[0-9-]+ [0-9:]+ \[[0-9]+\] //' -e '/took run\.lock/d' \
         -e 's/started a runner, pid [0-9]+/started a runner/' -e 's/runner [0-9]+: the queue/runner: the queue/' \
-        -e 's/\(pid [0-9]+\)/(pid P)/' -e 's/checked in [0-9.]+ s/checked in T s/' -e 's/after [0-9:]+/after T/g' \
+        -e 's/\(pid [0-9]+\)/(pid P)/' -e 's/checked in [0-9.]+ s/checked in T s/' -e 's/after [0-9.:]+/after T/g' \
         -e 's/took [0-9:]+\)/took T)/g' -e 's/, [0-9:]+ in([,;])/, T in\1/' \
         -e 's/%\(\.\{[^}]*\}\)j/%(.{FIELDS})j/g' \
         -e '/: fetching the discussion,/d' -e '/--write-comments/d' \
