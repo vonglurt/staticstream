@@ -111,7 +111,19 @@ def whole(v):
 q = whole(q)
 for i in q: i.pop("added", None)
 print(json.dumps(q, indent=1, sort_keys=True, ensure_ascii=False).replace(sys.argv[2], "HOME"))' "$h/.local/share/ytq/queue.json" "$h" > "$W/$s.queue.$side"
-    (cd "$h/out" && for f in *; do [ -e "$f" ] && printf '%s %s\n' "$f" "$(wc -c < "$f")"; done) > "$W/$s.files.$side"
+    # WHAT IS THERE, AND HOW BIG -- except for a .txt, which is recorded as
+    # "there and not empty" instead of as a byte count. Its exact bytes are
+    # compared by the `txt` kind below, through notes_only, which is the
+    # comparison that knows which parts of the file the frozen specification
+    # is an oracle for; a second, blinder comparison of the same file by its
+    # length can only ever disagree about the parts the first one has
+    # deliberately set aside -- and it did, the moment Where was added. The
+    # .mp4's 6000000 is a real check and stays one.
+    (cd "$h/out" && for f in *; do [ -e "$f" ] || continue
+        case "$f" in *.txt) printf '%s %s\n' "$f" "$([ -s "$f" ] && echo nonempty || echo empty)" ;;
+                       *) printf '%s %s\n' "$f" "$(wc -c < "$f")" ;;
+        esac
+    done) > "$W/$s.files.$side"
     for f in "$h"/out/*.txt; do [ -e "$f" ] && { echo "== $(basename "$f")"; notes_only "$f"; }; done > "$W/$s.txt.$side"
     { cat "$h/notify" 2>/dev/null; echo "== opened"; cat "$h/opened" 2>/dev/null; } | sed "s|$h|HOME|g" > "$W/$s.said.$side"
 }
@@ -135,6 +147,17 @@ compare() { # <scenario> <label>
 # the Python did; a specification written before a feature cannot be that
 # feature's oracle, so what the new sections CONTAIN is held by unit fixtures
 # instead (capture_meta, notes_at and discussion in src/ytq/runner.rs).
+#
+# Three ROWS are here for the same reason and are dropped the same way. Where,
+# Site and Duration are what the four sites -- youtube.com, youtube shorts,
+# x.com and reddit.com -- can each be asked for beyond the frozen
+# specification's seven rows, and only the Rust asks. Where is the one that
+# actually shows up here: the stand-in yt-dlp answers "Fake Uploader" for the
+# uploader and "Fake" for the channel, which is two names, which is a Where
+# row. Dropping the row is not dropping the check on it -- it is held by
+# `where_it_was_posted_is_read_from_whichever_field_the_site_means_by_it` in
+# src/ytq/runner.rs, on a fixture per site, which is a better oracle than a
+# program written before any of those sites was asked for.
 notes_only() {  # <file>
     awk '
         /^Discussion  \(/ { rest = 1 }
@@ -142,6 +165,7 @@ notes_only() {  # <file>
         /^Stats  \(read /  { stats = 1; next }
         stats && /^$/     { stats = 0; next }
         stats             { next }
+        /^  (Where|Site|Duration): / { next }
         /^$/              { held++; next }
                           { while (held-- > 0) print ""
                             sub(/^  Downloaded: .*/, "  Downloaded: T"); print }

@@ -184,8 +184,9 @@ pub fn content_type(path: &str) -> &'static str {
 /// What yt-dlp prints after the move when a capture will be made: the fields
 /// its header carries.
 pub const NOTES_PRINT: &str =
-    "after_move:NOTES %(.{webpage_url,license,title,uploader,channel,timestamp,upload_date,description,\
-     view_count,like_count,repost_count,comment_count})j";
+    "after_move:NOTES %(.{webpage_url,webpage_url_domain,extractor_key,license,title,uploader,uploader_id,\
+     channel,channel_id,duration,timestamp,upload_date,description,\
+     view_count,like_count,dislike_count,repost_count,comment_count})j";
 
 fn file_sha256(path: &str) -> io::Result<String> {
     let mut f = fs::File::open(path)?;
@@ -1052,8 +1053,9 @@ impl Runner {
         for a in [
             "--skip-download", "--no-simulate", "--no-playlist", "--no-warnings", "--write-subs", "--write-auto-subs", "--sub-langs", &subs,
             "--sub-format", "vtt", "--print", "video:STEM %(filename)s",
-            "--print", "video:META %(.{title,uploader,channel,webpage_url,timestamp,upload_date,license,description,subtitles,\
-             view_count,like_count,repost_count,comment_count})j",
+            "--print", "video:META %(.{title,uploader,uploader_id,channel,channel_id,duration,webpage_url,webpage_url_domain,\
+             extractor_key,timestamp,upload_date,license,description,subtitles,\
+             view_count,like_count,dislike_count,repost_count,comment_count})j",
             "-o", outtmpl, url,
         ] {
             full.push(a.to_string());
@@ -1178,6 +1180,23 @@ pub fn capture_meta(notes: &Value, url: &str, file: &str, now: f64) -> Value {
             None => t,
         }));
     }
+    // Where it was posted and how long it runs, in the capture's own header --
+    // the same two facts the .txt's Notes gained, by the same rules, because
+    // the capture is the copy most likely to outlive both the page and the
+    // .txt sitting beside it. A header that knows less than the text file next
+    // to it is a header nobody will trust to stand alone.
+    let author = pick("uploader").or_else(|| pick("channel")).unwrap_or_default();
+    let where_ = match pick("extractor_key").unwrap_or_default().as_str() {
+        "Reddit" => pick("channel_id").map(|sub| format!("r/{}", sub.trim_start_matches("r/"))),
+        "Twitter" => pick("uploader_id").map(|h| format!("@{}", h.trim_start_matches('@'))),
+        _ => pick("channel").filter(|c| !author.is_empty() && *c != author),
+    };
+    if let Some(w) = where_ {
+        meta.set("where", Value::str(w));
+    }
+    if let Some(Value::Num(d)) = notes.get("duration").filter(|v| truthy(Some(v))) {
+        meta.set("duration", Value::Num(*d));
+    }
     // When the site said it was published. The .txt has carried this since the
     // notes did; there is no reason for the capture to be the poorer record.
     if let Some(Value::Num(t)) = notes.get("timestamp") {
@@ -1190,6 +1209,7 @@ pub fn capture_meta(notes: &Value, url: &str, file: &str, now: f64) -> Value {
     let counts: Vec<(&str, f64)> = [
         ("views", "view_count"),
         ("likes", "like_count"),
+        ("downvotes", "dislike_count"),
         ("reposts", "repost_count"),
         ("replies", "comment_count"),
     ]
@@ -1323,17 +1343,48 @@ pub fn notes_at(meta: &Value, url: &str, lang: Option<&str>, video: Option<&str>
             _ => "unknown".into(),
         },
     };
-    let mut rows = vec![
-        ("Title", title.clone()),
-        ("Author", pick("uploader").or_else(|| pick("channel")).unwrap_or_else(|| "unknown".into())),
-        ("URL", pick("webpage_url").unwrap_or_else(|| url.to_string())),
-        ("Published", published),
-        ("Downloaded", when(now)),
+    let author = pick("uploader").or_else(|| pick("channel")).unwrap_or_else(|| "unknown".into());
+    let mut rows = vec![("Title", title.clone()), ("Author", author.clone())];
+    // WHO POSTED IT IS NOT ALWAYS WHERE IT WAS POSTED, and on three of the four
+    // sites ytq is pointed at they are different facts. A Reddit video has an
+    // uploader (a redditor) and a subreddit, and the subreddit is the half of
+    // the citation that says what the thing was part of -- `u/someone` posting
+    // to `r/videos` and to `r/conspiracy` is not the same context, and it is
+    // exactly what is lost when the post is deleted. X has a display name and
+    // an @handle, and the handle is the one that finds the account again.
+    // YouTube has an uploader and a channel that are usually the same string.
+    //
+    // So: one row, filled from whichever field the site in hand actually means
+    // by it, and absent when the site gave nothing -- `extractor_key` is
+    // yt-dlp's own name for which extractor answered, which is the only
+    // honest way to know whose field conventions are in play.
+    let site = pick("extractor_key").unwrap_or_default();
+    let where_ = match site.as_str() {
+        "Reddit" => pick("channel_id").map(|sub| format!("r/{}", sub.trim_start_matches("r/"))),
+        "Twitter" => pick("uploader_id").map(|h| format!("@{}", h.trim_start_matches('@'))),
+        _ => pick("channel").filter(|c| *c != author),
+    };
+    if let Some(w) = where_ {
+        rows.push(("Where", w));
+    }
+    if let Some(d) = pick("webpage_url_domain") {
+        rows.push(("Site", d));
+    }
+    rows.push(("URL", pick("webpage_url").unwrap_or_else(|| url.to_string())));
+    rows.push(("Published", published));
+    rows.push(("Downloaded", when(now)));
+    // How long the thing runs. Every one of the four sites gives it, and it is
+    // the one number that says whether a citation points at a ten-second clip
+    // or at a three-hour stream.
+    if let Some(Value::Num(d)) = meta.get("duration").filter(|v| truthy(Some(v))) {
+        rows.push(("Duration", fmt_secs(*d)));
+    }
+    rows.extend([
         // yt-dlp's license is what the site states: on YouTube, a Creative
         // Commons license's row on the watch page, and nothing otherwise.
         ("License", pick("license").unwrap_or_else(|| "not stated".into())),
         ("Video", video.filter(|v| !v.is_empty()).unwrap_or("none downloaded").to_string()),
-    ];
+    ]);
     if let Some(lang) = lang {
         // yt-dlp takes the uploader's captions over automatic ones in the same
         // language, so a language among 'subtitles' is the uploader's.
@@ -1358,6 +1409,8 @@ pub fn notes_at(meta: &Value, url: &str, lang: Option<&str>, video: Option<&str>
     let counts: Vec<(&str, String)> = [
         ("Views", "view_count"),
         ("Likes", "like_count"),
+        // Reddit's `downs`. Only Reddit fills it, so only Reddit shows it.
+        ("Downvotes", "dislike_count"),
         ("Reposts", "repost_count"),
         ("Replies", "comment_count"),
     ]
@@ -1498,6 +1551,64 @@ mod tests {
         // Stamped with its own time, and whole.
         assert!(n.contains("Stats  (read "), "{n}");
         assert!(n.contains("\n  Views:      34,776\n  Likes:      412\n  Reposts:    68\n  Replies:    38\n"), "{n}");
+    }
+
+    /// The four sites ytq is pointed at, and the one row that means a
+    /// different field on each of them. Fixtures rather than downloads,
+    /// because what is being held here is the rule, not the network.
+    #[test]
+    fn where_it_was_posted_is_read_from_whichever_field_the_site_means_by_it() {
+        // Reddit: the uploader is a redditor and `channel_id` is the
+        // subreddit, which is the half of the citation a deleted post takes
+        // with it.
+        let reddit = json::parse(r#"{"title": "a clip", "uploader": "u_someone", "channel_id": "aww",
+            "extractor_key": "Reddit", "webpage_url_domain": "reddit.com", "duration": 74,
+            "like_count": 8102, "dislike_count": 41, "comment_count": 219}"#).unwrap();
+        let n = notes_at(&reddit, "u", None, Some("v.mp4"), 1758142323.0);
+        assert!(n.contains("\n  Author:     u_someone\n  Where:      r/aww\n  Site:       reddit.com\n"), "{n}");
+        assert!(n.contains("\n  Duration:   1:14\n"), "{n}");
+        // Reddit is the one site that gives downvotes, so it is the one that shows them.
+        assert!(n.contains("\n  Likes:      8,102\n  Downvotes:  41\n  Replies:    219\n"), "{n}");
+        // And the capture's header carries the same two facts as the .txt.
+        let m = capture_meta(&reddit, "u", "/tmp/v.mp4", 1758142323.0);
+        assert_eq!(m.get("where").unwrap().as_str(), Some("r/aww"));
+        assert!(matches!(m.get("duration"), Some(Value::Num(d)) if *d == 74.0));
+        assert!(matches!(m.get("stats").unwrap().get("downvotes"), Some(Value::Num(n)) if *n == 41.0));
+        // A subreddit yt-dlp already spelled `r/aww` is not spelled `r/r/aww`.
+        let prefixed = json::parse(r#"{"title": "c", "uploader": "u", "channel_id": "r/aww", "extractor_key": "Reddit"}"#).unwrap();
+        assert!(notes_at(&prefixed, "u", None, None, 0.0).contains("\n  Where:      r/aww\n"));
+
+        // X: the display name is the Author and the @handle is what finds the
+        // account again.
+        let x = json::parse(r#"{"title": "a post", "uploader": "Some One", "uploader_id": "someone",
+            "extractor_key": "Twitter", "webpage_url_domain": "x.com"}"#).unwrap();
+        assert!(notes_at(&x, "u", None, None, 0.0).contains("\n  Author:     Some One\n  Where:      @someone\n  Site:       x.com\n"));
+
+        // YouTube: a channel worth naming only when it is not the uploader's
+        // own name repeated, which is what it usually is.
+        let yt = json::parse(r#"{"title": "v", "uploader": "Rick Astley", "channel": "RickAstleyVEVO",
+            "channel_id": "UCuAXFkgsw1L7xaCfnd5JJOw", "extractor_key": "Youtube", "duration": 3812}"#).unwrap();
+        let n = notes_at(&yt, "u", None, None, 0.0);
+        assert!(n.contains("\n  Where:      RickAstleyVEVO\n"), "{n}");
+        // The opaque UC... id is never what the row shows.
+        assert!(!n.contains("UCuAXF"), "{n}");
+        assert!(n.contains("\n  Duration:   1:03:32\n"), "{n}");
+        let same = json::parse(r#"{"title": "v", "uploader": "jawed", "channel": "jawed", "extractor_key": "Youtube"}"#).unwrap();
+        assert!(!notes_at(&same, "u", None, None, 0.0).contains("Where:"), "the same name twice is not two facts");
+    }
+
+    /// Every row added since the frozen specification is absent when the site
+    /// said nothing, so a capture written before today reads the same today.
+    #[test]
+    fn a_download_from_before_these_rows_reads_as_it_always_did() {
+        let old = json::parse(r#"{"title": "Me at the zoo", "uploader": "jawed",
+            "webpage_url": "https://www.youtube.com/watch?v=jNQXAC9IVRw", "timestamp": 1114313512}"#).unwrap();
+        let n = notes_at(&old, "u", None, Some("v.mp4"), 1114313512.0);
+        for row in ["Where:", "Site:", "Duration:"] {
+            assert!(!n.contains(row), "{row} with nothing to put in it: {n}");
+        }
+        let m = capture_meta(&old, "u", "/tmp/v.mp4", 1758142323.0);
+        assert!(m.get("where").is_none() && m.get("duration").is_none(), "{m:?}");
     }
 
     #[test]

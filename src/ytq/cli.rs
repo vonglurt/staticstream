@@ -71,6 +71,13 @@ and does not settle, and the License line shows the Creative Commons cases.
 The yt-dlp guide ('guide') covers dates, archiving, quoting and
 accessibility.
 
+WHAT A DOWNLOAD LEAVES is the OUTPUT setting below, and these override it for
+one command:  --mp4 keeps the video file yt-dlp downloaded and writes no
+capture; --sstr keeps a Static Stream capture and removes the video once the
+capture has been read back and checked; --both keeps the two. `--output MODE`
+is the long way to say the same. A folder of captures goes back to being a
+folder of video files with 'sstr export DIR'.
+
 AUTOSTART is off until you ask for it:  touch ~/.config/ytq/auto
 With that file there, clip, add and cookies also start downloading in the
 background whenever nothing is downloading already. Without it they only
@@ -135,6 +142,13 @@ Settings, if you want them, in ~/.config/ytq/config as KEY=VALUE:
   SUBS      caption languages for the transcript, a yt-dlp --sub-langs list
             (default en,en-orig,en-US,en-GB: exact names, since en.* also
             takes YouTube's translations into English); SUBS= turns it off
+  OUTPUT    what a finished download leaves: sstr (a capture, the default),
+            mp4 (the downloaded file, and no capture) or both
+  ARCHIVE_DIR  where captures go                        (default: DIR)
+  SSTR_KEY  the key captures are signed with  (default ~/.ssh/id_ed25519 when
+            there is one; SSTR_KEY= for unsigned)
+  COMMENTS  how many comments a download may fetch    (default 200; COMMENTS=
+            asks for none, as SUBS= does for captions)
 and next to it the empty file ~/.config/ytq/auto, which switches autostart on.";
 
 struct Ctx {
@@ -365,6 +379,48 @@ fn probe(ctx: &Ctx, args: &[String]) -> i32 {
 }
 
 /// `sstr ytq ARGS`: the Python ytq's `main(argv)`, for the commands step 2a has.
+/// `--output MODE`, `--output=MODE`, `--mp4`, `--sstr`, `--both`: the mode
+/// asked for, taken out of `argv` so the command behind it parses as it
+/// always did. The last one given wins, as a shell's own options do.
+fn take_output(argv: &mut Vec<String>) -> Result<Option<String>, String> {
+    let mut mode: Option<String> = None;
+    let mut keep: Vec<String> = Vec::new();
+    let mut i = 0;
+    while i < argv.len() {
+        let a = argv[i].clone();
+        let named = match a.as_str() {
+            "--mp4" => Some("mp4".to_string()),
+            "--sstr" => Some("sstr".to_string()),
+            "--both" => Some("both".to_string()),
+            "--output" => {
+                // A bare --output at the end is the user meaning to say
+                // something; taking it as "no override" would silently do the
+                // opposite of what they asked.
+                let v = argv.get(i + 1).cloned().ok_or_else(|| "nothing".to_string())?;
+                i += 1;
+                Some(v)
+            }
+            _ => match a.strip_prefix("--output=") {
+                Some(v) => Some(v.to_string()),
+                None => None,
+            },
+        };
+        match named {
+            Some(v) => {
+                let v = v.trim().to_lowercase();
+                if !matches!(v.as_str(), "sstr" | "mp4" | "both") {
+                    return Err(if v.is_empty() { "nothing".into() } else { v });
+                }
+                mode = Some(v);
+            }
+            None => keep.push(a),
+        }
+        i += 1;
+    }
+    *argv = keep;
+    Ok(mode)
+}
+
 pub fn main(argv: &[String]) -> i32 {
     // BEFORE THE SETTINGS, so it answers on a machine with no HOME. What
     // version a program is has nothing to do with where its queue lives, and
@@ -385,6 +441,28 @@ pub fn main(argv: &[String]) -> i32 {
         return 2;
     };
     let mut ctx = Ctx { paths, home, s, mode: Mode::for_stdout(), run: RunLock::default() };
+    // WHAT THIS ONE COMMAND LEAVES, without editing a config file to find out.
+    // `--run` and `--no-run` are already the one-command answer to a setting
+    // that lives in a file, and this is the same move for OUTPUT: --mp4 keeps
+    // the downloaded video, --sstr the capture, --both the two.
+    //
+    // It needs no plumbing at all, and that is the point of settings being one
+    // map rather than a struct per feature: the override goes into the map the
+    // runner is about to read, so `output_of` -- and `ytq --help`, and the
+    // runner's opening log line, and the Workspace if it were handed this map
+    // -- all say the same thing without one of them being taught about a flag.
+    let mut argv: Vec<String> = argv.to_vec();
+    match take_output(&mut argv) {
+        Ok(Some(mode)) => {
+            ctx.s.insert("OUTPUT".into(), mode);
+        }
+        Ok(None) => {}
+        Err(bad) => {
+            eprintln!("ytq: --output is sstr, mp4 or both, not {bad}");
+            return 2;
+        }
+    }
+    let argv = &argv;
     let flags: Vec<&str> = argv.iter().map(String::as_str).filter(|a| matches!(*a, "--run" | "--no-run" | "--quiet")).collect();
     let args: Vec<String> = argv.iter().filter(|a| !flags.contains(&a.as_str())).cloned().collect();
     let cmd = args.first().map(String::as_str).unwrap_or("tui");
@@ -526,5 +604,62 @@ pub fn main(argv: &[String]) -> i32 {
             crate::ytq::window::main(runner)
         }
         other => help(&ctx, other),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn take(args: &[&str]) -> (Result<Option<String>, String>, Vec<String>) {
+        let mut v: Vec<String> = args.iter().map(|s| s.to_string()).collect();
+        let got = take_output(&mut v);
+        (got, v)
+    }
+
+    #[test]
+    fn the_output_override_is_taken_out_and_the_command_behind_it_still_parses() {
+        // Every spelling, and the command it was wrapped around comes out whole.
+        for (args, want) in [
+            (vec!["--mp4", "add", "https://x"], "mp4"),
+            (vec!["--sstr", "add", "https://x"], "sstr"),
+            (vec!["--both", "add", "https://x"], "both"),
+            (vec!["--output", "mp4", "add", "https://x"], "mp4"),
+            (vec!["--output=mp4", "add", "https://x"], "mp4"),
+            (vec!["add", "https://x", "--mp4"], "mp4"),
+            // yt-dlp's own spelling of a value is not case law, but MP4 is
+            // what a person types, and it is the same mode.
+            (vec!["--output", "MP4", "add", "https://x"], "mp4"),
+        ] {
+            let (got, left) = take(&args);
+            assert_eq!(got.unwrap().as_deref(), Some(want), "{args:?}");
+            assert_eq!(left, vec!["add".to_string(), "https://x".to_string()], "{args:?}");
+        }
+        // The last one wins, as a shell's options do.
+        assert_eq!(take(&["--mp4", "--sstr", "run"]).0.unwrap().as_deref(), Some("sstr"));
+        // Nothing asked for is nothing changed, and the config still decides.
+        let (got, left) = take(&["run", "--no-run"]);
+        assert_eq!(got.unwrap(), None);
+        assert_eq!(left, vec!["run".to_string(), "--no-run".to_string()]);
+        // A mode that is not one of the three, and a --output with nothing
+        // after it, are refused rather than quietly ignored: silently doing
+        // the opposite of what was asked is the one outcome worth ruling out.
+        assert_eq!(take(&["--output", "wav", "run"]).0.unwrap_err(), "wav");
+        assert_eq!(take(&["--output", ""]).0.unwrap_err(), "nothing");
+        assert_eq!(take(&["run", "--output"]).0.unwrap_err(), "nothing");
+    }
+
+    /// The override and the file end up in the same place, which is the map
+    /// the runner reads -- so what `ytq --help` prints, what the runner logs
+    /// and what a download actually leaves cannot disagree.
+    #[test]
+    fn the_override_lands_where_the_setting_lands() {
+        let mut s: BTreeMap<String, String> = BTreeMap::new();
+        s.insert("OUTPUT".into(), "sstr".into());
+        assert_eq!(crate::ytq::runner::output_of(&s), "sstr");
+        let mut argv: Vec<String> = ["--mp4", "run"].iter().map(|s| s.to_string()).collect();
+        s.insert("OUTPUT".into(), take_output(&mut argv).unwrap().unwrap());
+        assert_eq!(crate::ytq::runner::output_of(&s), "mp4");
+        assert_eq!(argv, vec!["run".to_string()]);
     }
 }
