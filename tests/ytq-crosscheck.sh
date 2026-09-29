@@ -20,8 +20,13 @@
 # own HOME, and stub wl-paste, xclip and notify-send, so the real clipboard,
 # queue and notifications are never touched.
 
+# Single quotes here hold text for something else to read: a stand-in script
+# being written out, or a condition that check() hands to eval. None of it is
+# meant to expand where it is written.
+# shellcheck disable=SC2016
+
 set -u
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 SPEC=${SPEC:-$ROOT/tests/reference/ytq.py}
 SSTR=${SSTR:-$ROOT/target/release/sstr}
 # The ytq under test: the binary, or `sstr ytq`. Left unquoted where it is
@@ -54,6 +59,7 @@ chmod +x "$STUB"/*
 
 # py|rs <home> args...: one ytq or the other, in that home, with the stubs.
 py() { h=$1; shift; env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$h" PATH="$STUB:$PATH" YTQ_NOTIFY="$h/notify" PYTHONIOENCODING=utf-8 python3 "$W/ytq.py" "$@"; }
+# shellcheck disable=SC2086  # $YTQ is 'sstr ytq' by default: two words
 rs() { h=$1; shift; env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$h" PATH="$STUB:$PATH" YTQ_NOTIFY="$h/notify" $YTQ "$@"; }
 home() { d="$W/home-$1"; rm -rf "$d"; mkdir -p "$d"; echo "$d"; }
 
@@ -175,12 +181,15 @@ same "list: with an error and a non-ASCII title" "$W/list.py" "$W/list.rs"
 
 # The file itself: the Rust ytq rewrites it as Python's json.dump would.
 rs "$H" add --no-run https://example.com/rust-wrote-this > /dev/null 2>&1
-python3 -c "
+if python3 -c "
 import json, sys
 p = sys.argv[1]; raw = open(p).read(); again = json.dumps(json.loads(raw), indent=1)
-sys.exit(0 if raw == again else 1)" "$H/.local/share/ytq/queue.json" \
-    && ok "queue.json rewritten by the Rust ytq is byte for byte what json.dump(indent=1) writes" \
-    || bad "queue.json rewritten by the Rust ytq differs from json.dump(indent=1)"
+sys.exit(0 if raw == again else 1)" "$H/.local/share/ytq/queue.json"
+then
+    ok "queue.json rewritten by the Rust ytq is byte for byte what json.dump(indent=1) writes"
+else
+    bad "queue.json rewritten by the Rust ytq differs from json.dump(indent=1)"
+fi
 
 H2=$(home clear); cp -r "$H/.local" "$H2/"
 py "$H" clear > "$W/clear.py"; rs "$H2" clear > "$W/clear.rs"
@@ -197,7 +206,11 @@ while [ $i -lt 30 ]; do
 done
 wait
 n=$(python3 -c "import json,sys; q=json.load(open(sys.argv[1])); print(len(set(i['url'] for i in q)), len(q))" "$H/.local/share/ytq/queue.json")
-[ "$n" = "30 30" ] && ok "thirty adds from both ytqs at once: 30 entries, each once" || bad "thirty adds at once left $n (distinct, total)"
+if [ "$n" = "30 30" ]; then
+    ok "thirty adds from both ytqs at once: 30 entries, each once"
+else
+    bad "thirty adds at once left $n (distinct, total)"
+fi
 
 # 4. The clipboard and the messages --------------------------------------------------------
 cat > "$W/bookmarks.html" <<'EOF'

@@ -20,7 +20,7 @@
 # passes, so a lone checkout still builds.
 
 set -u
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 # THE PROTOTYPE IS VENDORED, at tests/reference/copal-sstr.py. It used to be
 # reached for in a second checkout, and when that checkout was not there these
 # 44 comparisons skipped and `make check` still exited 0 -- so a clone of this
@@ -89,6 +89,7 @@ echo "  --      crosscheck: $SSTR against $PROTO"
 for kind in $INPUTS; do
     for w in py rs; do
         if [ $w = py ]; then
+            # shellcheck disable=SC2046,SC2086  # a writer's arguments: split into words, on purpose
             $PY record "$W/$kind.$w.sstr" --input "$W/$kind.bin" $(writer_args $kind)
         else
             # --format 0 ON PURPOSE. The Rust writes version 1 by default now,
@@ -96,11 +97,15 @@ for kind in $INPUTS; do
             # these 44 comparisons are comparisons AT VERSION 0, which is
             # exactly what makes them the chain back to the specification.
             # Version 1 is checked by tests/outer-check.sh, against version 0.
+            # shellcheck disable=SC2046,SC2086  # a writer's arguments: split into words, on purpose
             "$SSTR" record "$W/$kind.$w.sstr" --input "$W/$kind.bin" --format 0 $(writer_args $kind)
         fi
         compare "$kind, written by $w" "$W/$kind.$w.sstr"
-        cmp -s "$W/rs.out" "$W/$kind.bin" && ok "$kind, written by $w: payload is the original" \
-            || bad "$kind, written by $w: payload is not the original"
+        if cmp -s "$W/rs.out" "$W/$kind.bin"; then
+            ok "$kind, written by $w: payload is the original"
+        else
+            bad "$kind, written by $w: payload is not the original"
+        fi
     done
 done
 
@@ -111,6 +116,7 @@ for w in py rs; do
     while IFS='|' read -r label mode margs; do
         [ -n "$label" ] || continue
         rm -f "$W/hurt.sstr"
+        # shellcheck disable=SC2086  # the arguments of a kind of damage: split into words, on purpose
         if ! python3 "$ROOT/tests/damage.py" "$PROTO" "$mode" "$cap" "$W/hurt.sstr" $margs > "$W/damage.log" 2>&1; then
             bad "$w capture, $label: damage.py failed: $(tail -1 "$W/damage.log")"
             continue
@@ -138,7 +144,11 @@ cap="$W/ts.py.sstr"
 [ -f "$cap" ] || cap="$W/rand.py.sstr"
 $PY armor "$cap" > "$W/py.armor"
 "$SSTR" armor "$cap" > "$W/rs.armor"
-cmp -s "$W/py.armor" "$W/rs.armor" && ok "armor: identical lines ($(wc -l < "$W/rs.armor"))" || bad "armor: the lines differ"
+if cmp -s "$W/py.armor" "$W/rs.armor"; then
+    ok "armor: identical lines ($(wc -l < "$W/rs.armor"))"
+else
+    bad "armor: the lines differ"
+fi
 while IFS='|' read -r label drop ber junk; do
     [ -n "$label" ] || continue
     python3 "$ROOT/tests/noise.py" "$drop" "$ber" "$junk" < "$W/py.armor" > "$W/line"
@@ -165,8 +175,11 @@ EOF
 python3 "$ROOT/tests/noise.py" 0.03 0 0 < "$W/rs.armor" > "$W/line"
 "$SSTR" unarmor "$W/line" --erasures "$W/rs.er" > "$W/rs.un" 2>/dev/null
 $PY unarmor "$W/line" --erasures "$W/py.er" > "$W/py.un" 2>/dev/null
-cmp -s "$W/py.un" "$W/rs.un" && cmp -s "$W/py.er" "$W/rs.er" && ok "unarmor: same bytes, same erasure ranges" \
-    || bad "unarmor: bytes or erasure ranges differ"
+if cmp -s "$W/py.un" "$W/rs.un" && cmp -s "$W/py.er" "$W/rs.er"; then
+    ok "unarmor: same bytes, same erasure ranges"
+else
+    bad "unarmor: bytes or erasure ranges differ"
+fi
 
 if [ "$FAILED" -eq 0 ]; then
     printf '  ok      crosscheck: %d comparisons agree\n' "$PASSED"

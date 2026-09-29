@@ -673,6 +673,7 @@ nothing else while the share is up.
 | `ytq-hostile-check` | ytq against a yt-dlp whose every field carries an attack: nothing run, no control character kept or printed, no forged row, the tags whole, no file touched that is not the download's | 36 |
 | | **total** | **436** |
 | `shell-check` | a shell is started by the Workspace's Services and nowhere else | — |
+| `shell-lint` | shellcheck over every script here, these checks included: anything it says fails, and so does a script with no `set -u` or a guessable name in `/tmp` | — |
 
 **Two specifications, both frozen, both Python**: `tests/reference/copal-sstr.py`
 for the format at version 0, and `tests/reference/ytq.py` for the queue, the

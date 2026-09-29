@@ -25,7 +25,7 @@
 # step turns on.
 
 set -u
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 SSTR=${SSTR:-$ROOT/target/release/sstr}
 # Vendored; see tests/reference/README.md for why.
 PROTO=${PROTO:-$ROOT/tests/reference/copal-sstr.py}
@@ -151,6 +151,7 @@ bsize=$(wc -c < "$BW/cap.0.sstr" 2>/dev/null || echo 0)
 # recovers VERSION FILE MODE ARGS...: yes when the payload comes back whole.
 recovers() {
     _v=$1; shift
+    # shellcheck disable=SC2086  # the arguments of a kind of damage: split into words, on purpose
     python3 "$ROOT/tests/damage.py" "$PROTO" "$1" "$BW/cap.$_v.sstr" "$BW/hurt.bin" $2 >/dev/null 2>&1 || { echo damage-failed; return; }
     "$SSTR" play "$BW/hurt.bin" -o "$BW/played.bin" >/dev/null 2>&1
     if cmp -s "$BW/payload.bin" "$BW/played.bin"; then echo yes; else echo no; fi

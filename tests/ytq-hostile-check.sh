@@ -28,8 +28,7 @@
 # shellcheck disable=SC2016
 
 set -u
-# shellcheck disable=SC1007  # CDPATH is meant to be empty for this one cd
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 SSTR=${SSTR:-$ROOT/target/release/sstr}
 # Left unquoted where it is called, so that 'sstr ytq' is two words.
 YTQ=${YTQ:-$SSTR ytq}

@@ -5,6 +5,7 @@
 # that opens a video window is a check that cannot run without someone
 # watching. This reads what it is given and says how much of it there was, so
 # a Service that pipes a capture into a player can be seen to have done it.
+set -eu
 if [ "${1:-}" = "-" ] || [ $# -eq 0 ]; then
     n=$(cat | wc -c)
     echo "standin-player: $n bytes on stdin"

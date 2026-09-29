@@ -26,8 +26,13 @@
 # Nothing here touches the real queue, clipboard, browser or notifications:
 # every window has a throwaway HOME and stubs first on its PATH.
 
+# Single quotes here hold text for something else to read: a stand-in script
+# being written out, or a condition that check() hands to eval. None of it is
+# meant to expand where it is written.
+# shellcheck disable=SC2016
+
 set -u
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 SPEC=${SPEC:-$ROOT/tests/reference/ytq.py}
 SSTR=${SSTR:-$ROOT/target/release/sstr}
 # The ytq under test: the binary, or `sstr ytq`. Left unquoted where it is
@@ -162,7 +167,9 @@ echo "  --      ytq-window-crosscheck: $YTQ beside the window of $SPEC, in tmux 
 # mid-part, the same one mid-merge.
 S=$(home setup)
 mkdir -p "$S/gates"
+# shellcheck disable=SC2086  # $YTQ is 'sstr ytq' by default: two words
 env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$S" PATH="$STUB:$PATH" $YTQ add --no-run 'https://www.youtube.com/watch?v=GATEDAAAAAA' > /dev/null 2>&1
+# shellcheck disable=SC2086  # and here
 env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$S" PATH="$STUB:$PATH" STANDIN_GATES="$S/gates" $YTQ run --quiet > "$S/run.out" 2>&1 &
 RUNNER=$!
 wait_for "$S/gates/at.1" || bad "setup: the stand-in never reached gate 1"

@@ -16,8 +16,7 @@
 # by hand, by somebody who has read what reaches it.
 
 set -u
-# shellcheck disable=SC1007  # CDPATH is meant to be empty for this one cd
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$ROOT" || exit 2
 
 WANT='src/workspace/config.rs:2

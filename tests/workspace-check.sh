@@ -43,7 +43,7 @@
 # has a throwaway HOME and its own private tmux server.
 
 set -u
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 
 # A COLUMN IS SLICED OUT OF THE SCREEN BY CHARACTER, SO THE LOCALE IS FIXED
 # HERE. The Browser pads every column to a character width, and `cut -c` counts
@@ -72,6 +72,7 @@ command -v tmux >/dev/null 2>&1 || skip "no tmux"
 W=$(mktemp -d "${TMPDIR:-/tmp}/sstr-workspace.XXXXXX")
 SOCK="sstr-workspace-$$"
 T() { tmux -L "$SOCK" -f "$W/tmux.conf" "$@"; }
+# shellcheck disable=SC2329  # called by the trap below
 cleanup() { T kill-server 2>/dev/null; rm -rf "$W"; }
 trap cleanup EXIT INT TERM
 FAILED=0
@@ -98,13 +99,16 @@ mkdir -p "$H/.config/copal" "$A/SharedVM/deeper" "$A/Notes"
 # WITH ITS COMMENTS, because Copal's media.conf is three quarters explanation
 # and the Settings screen must not cost the file any of it. A fixture of bare
 # KEY=VALUE lines would let a writer that reformats the whole file pass.
-printf '# media.conf, as the check writes it\n' > "$H/.config/copal/media.conf"
-printf '# ARCHIVE_DIR: where the Workspace opens.\n' >> "$H/.config/copal/media.conf"
-printf 'ARCHIVE_DIR=%s\n' "$A" >> "$H/.config/copal/media.conf"
-# The report's settings for the Workspace. PLAYER is a stand-in, because a
-# Service must never reach the real mpv; SERVE is the port above.
-printf 'SERVE=127.0.0.1:%s\n' "$SERVE_PORT" >> "$H/.config/copal/media.conf"
-printf 'PLAYER=%s\n' "$ROOT/tests/standin/player" >> "$H/.config/copal/media.conf"
+# The report's settings for the Workspace are the last two. PLAYER is a
+# stand-in, because a Service must never reach the real mpv; SERVE is the
+# port above.
+{
+    printf '# media.conf, as the check writes it\n'
+    printf '# ARCHIVE_DIR: where the Workspace opens.\n'
+    printf 'ARCHIVE_DIR=%s\n' "$A"
+    printf 'SERVE=127.0.0.1:%s\n' "$SERVE_PORT"
+    printf 'PLAYER=%s\n' "$ROOT/tests/standin/player"
+} > "$H/.config/copal/media.conf"
 # Names chosen so byte order and a human's order differ: Z before a, and an
 # accent past both. The Browser and `ls` must agree anyway.
 for f in "Zeta-report.sstr" "alpha.txt" "beta.sstr" "café.txt"; do

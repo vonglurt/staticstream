@@ -21,7 +21,7 @@
 # Usage:  sh verify.sh [DIR]      (DIR defaults to the directory this is in)
 
 set -u
-HERE=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+HERE=$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd)
 D=${1:-$HERE}
 A="$D/acceptance"
 FAILED=0

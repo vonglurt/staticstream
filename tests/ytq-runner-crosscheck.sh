@@ -19,8 +19,13 @@
 #   G  transcript text: vtt_text and textwrap.fill on a corpus
 #   H  a real download of jNQXAC9IVRw, when the network is there (YTQ_REAL=0 skips)
 
+# Single quotes here hold text for something else to read: a stand-in script
+# being written out, or a condition that check() hands to eval. None of it is
+# meant to expand where it is written.
+# shellcheck disable=SC2016
+
 set -u
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 SPEC=${SPEC:-$ROOT/tests/reference/ytq.py}
 SSTR=${SSTR:-$ROOT/target/release/sstr}
 # The ytq under test: the binary, or `sstr ytq`. Left unquoted where it is
@@ -68,6 +73,7 @@ EOF
 chmod +x "$STUB"/*
 
 py() { h=$1; shift; env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$h" PATH="$STUB:$PATH" PYTHONIOENCODING=utf-8 python3 "$W/ytq.py" "$@"; }
+# shellcheck disable=SC2086  # $YTQ is 'sstr ytq' by default: two words
 rs() { h=$1; shift; env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$h" PATH="$STUB:$PATH" $YTQ "$@"; }
 # OUTPUT=mp4: what the Python ytq does, which is what this compares -- and is
 # step 2c's "OUTPUT=mp4 leaves today's files". The Python ytq ignores the key.
@@ -81,6 +87,7 @@ start_runner() {
         env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$2" PATH="$STUB:$PATH" PYTHONIOENCODING=utf-8 STANDIN_GATES="$3" \
             python3 "$W/ytq.py" run --quiet > "$2/run.out" 2>&1 &
     else
+        # shellcheck disable=SC2086  # $YTQ is 'sstr ytq' by default: two words
         env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$2" PATH="$STUB:$PATH" STANDIN_GATES="$3" \
             $YTQ run --quiet > "$2/run.out" 2>&1 &
     fi
@@ -222,8 +229,11 @@ for side in py rs; do
     collect B "$side" "$H"
 done
 same "B: the runner's exit, and no yt-dlp left behind" "$W/B.exit.py" "$W/B.exit.rs"
-grep -q '"status": "queued"' "$W/B.queue.rs" && grep -q '"live": {}' "$W/B.queue.rs" \
-    && ok "B: the Rust entry is back in the queue with its live record cleared" || bad "B: the Rust entry was not put back"
+if grep -q '"status": "queued"' "$W/B.queue.rs" && grep -q '"live": {}' "$W/B.queue.rs"; then
+    ok "B: the Rust entry is back in the queue with its live record cleared"
+else
+    bad "B: the Rust entry was not put back"
+fi
 compare B "B: SIGTERM mid-merge"
 
 # C, D, E: the check rejects; a bot check and the cookie retry; a flaky download.
@@ -320,7 +330,10 @@ if [ "${YTQ_REAL:-1}" != 0 ] && timeout 60 yt-dlp --ignore-config --simulate --n
     # What only the Rust writes into the video, checked against the video
     # itself: the notes as its comment, the transcript as its lyrics, the
     # zoo's three chapters, and the thumbnail as its cover.
-    f=$(ls "$H"/out/*.mp4 2>/dev/null | head -1); t=$(ls "$H"/out/*.txt 2>/dev/null | head -1)
+    # shellcheck disable=SC2012  # the names are ytq's: A-Z a-z 0-9 - _ and a dot
+    f=$(ls "$H"/out/*.mp4 2>/dev/null | head -1)
+    # shellcheck disable=SC2012  # and so are these
+    t=$(ls "$H"/out/*.txt 2>/dev/null | head -1)
     if [ -n "$f" ] && ffprobe -v error -show_entries format_tags=comment -of default=nw=1:nk=1 "$f" | head -3 | grep -qx 'Notes' \
         && ffprobe -v error -show_entries format_tags=lyrics -of default=nw=1:nk=1 "$f" | head -1 | grep -qxF "$(sed -n '/^Transcript$/{n;p;q;}' "$t")" \
         && [ "$(ffprobe -v error -show_entries chapter=start_time -of csv=p=0 "$f" | wc -l)" = 3 ] \

@@ -31,7 +31,7 @@
 # -- and it is not applied to `make build` or to what copal-build installs,
 # where Alpine's default is the right one.
 set -u
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 CARGO=${CARGO:-cargo}
 RUSTFLAGS="${RUSTFLAGS:-} -C target-feature=+crt-static"
 export RUSTFLAGS

@@ -19,8 +19,13 @@
 #
 # The downloads are the stand-in yt-dlp's (tests/standin), except the real one.
 
+# Single quotes here hold text for something else to read: a stand-in script
+# being written out, or a condition that check() hands to eval. None of it is
+# meant to expand where it is written.
+# shellcheck disable=SC2016
+
 set -u
-ROOT=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
+ROOT=$(CDPATH='' cd -- "$(dirname -- "$0")/.." && pwd)
 SSTR=${SSTR:-$ROOT/target/release/sstr}
 # The ytq under test: the binary, or `sstr ytq`. Left unquoted where it is
 # called, so that the two words of the default split into two. $SSTR itself
@@ -46,6 +51,7 @@ printf '#!/bin/sh\nfor last; do :; done\nprintf "%%s\\n" "$last" >> "$HOME/notif
 chmod +x "$STUB"/*
 
 # ytq <home> <path-dir> args...
+# shellcheck disable=SC2086  # $YTQ is 'sstr ytq' by default: two words
 ytq() { h=$1 p=$2; shift 2; env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$h" PATH="$p:$PATH" $YTQ "$@"; }
 # home <name> <config lines...>
 home() {
@@ -59,6 +65,7 @@ fetch() { # <home> <id> [path]: add and run one video
     ytq "$1" "${3:-$STUB}" run --quiet > "$1/run.out" 2>&1
 }
 entry() { python3 -c 'import json,sys; i=json.load(open(sys.argv[1]))[0]; print(i["status"], i["file"].replace(sys.argv[2], "HOME"))' "$1/.local/share/ytq/queue.json" "$1"; }
+# shellcheck disable=SC2012  # the names are ytq's: A-Z a-z 0-9 - _ and a dot
 files() { (cd "$1" && ls -A | tr '\n' ' '); }
 
 echo "  --      ytq-archive-check: $YTQ, archiving to Static Stream"
@@ -141,6 +148,7 @@ if [ "${YTQ_REAL:-1}" != 0 ] && timeout 60 yt-dlp --ignore-config --simulate --n
     REAL="$W/real"; mkdir -p "$REAL"; cp "$STUB/notify-send" "$STUB/wl-paste" "$STUB/xclip" "$REAL/"
     H=$(home realboth OUTPUT=both)
     fetch "$H" jNQXAC9IVRw "$REAL"
+    # shellcheck disable=SC2012  # the names are ytq's: A-Z a-z 0-9 - _ and a dot
     mp4=$(ls "$H"/out/*.mp4 2>/dev/null | head -1)
     sstr="${mp4%.mp4}.sstr"
     check "real, both: $(files "$H/out")" '[ -f "$mp4" ] && [ -f "$sstr" ] && [ -f "${mp4%.mp4}.txt" ]'
@@ -160,6 +168,5 @@ if [ "$FAILED" -eq 0 ]; then
     printf '  ok      ytq-archive-check: %d checks pass\n' "$PASSED"
 else
     printf '\033[31merror:\033[0m ytq-archive-check: %d of %d checks fail\n' "$FAILED" $((FAILED + PASSED))
-    for f in "$W"/*/run.out; do :; done
     exit 1
 fi
