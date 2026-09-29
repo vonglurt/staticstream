@@ -246,8 +246,9 @@ something it does not control.
 
 | Group | Purpose |
 |---|---|
-| `NAME_OPTS` | the filename rule: first word of the uploader, title, id, in the URL-safe base64 alphabet and nothing else |
+| `NAME_OPTS` | the filename rule: up to three words of the uploader run together, title (cut to fit 140), id, in the URL-safe base64 alphabet and nothing else |
 | `META_OPTS` | the same notes written into the MP4's own metadata, when ffmpeg is there |
+| `tag_video()` | after the transcript run and before any capture: the full notes as the MP4's comment, the transcript as its lyrics, tags as keywords, chapters, and the thumbnail as cover, via an FFMETADATA file |
 | progress template | one `PROGRESS` line per update, fields `\|`-separated in a fixed order |
 | `--print` | `FILE`, `NOTES`, and on the transcript run `STEM` and `META` |
 
@@ -569,7 +570,7 @@ it — `r/SUBREDDIT` for Reddit, the `@handle` for x.com, the channel for
 YouTube when that is not simply the uploader's name again — along with the
 site, how long the thing runs, and, on Reddit alone, the downvotes it gives.
 
-Names carry the first word of the uploader, the title and the id, in the
+Names carry up to three words of the uploader, the title and the id, in the
 URL-safe base64 alphabet and nothing else. Observed in that folder now: 26
 captures, 41 text files, and 117 older `.mp4` and `.webm` from before
 archiving was in effect, in 24 GB.

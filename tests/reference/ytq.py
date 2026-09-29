@@ -21,11 +21,12 @@
 #   ytq clear          forget finished, rejected and failed entries (h twice in
 #                      the window); the files and the log stay
 #
-# FILENAMES are the first word of the uploader's name, the title and the video
-# id, in the URL-safe base64 alphabet (A-Z a-z 0-9 - _) and nothing else, then
-# the extension: 'Café Tour: Part 2/3 [4K]' by Rick Astley is
-# Rick-Cafe_Tour_Part_2_3_4K_dQw4w9WgXcQ.mp4. A YouTube video also gets
-# Rick-Cafe_Tour_Part_2_3_4K_dQw4w9WgXcQ.txt beside it: Notes (full title,
+# FILENAMES are up to the first three words of the uploader's name run
+# together, the title and the video id, in the URL-safe base64 alphabet (A-Z
+# a-z 0-9 - _) and nothing else, then the extension: 'Café Tour: Part 2/3
+# [4K]' by Rick Astley is RickAstley-Cafe_Tour_Part_2_3_4K_dQw4w9WgXcQ.mp4,
+# the title cut short when name and title pass 140. A YouTube video also gets
+# RickAstley-Cafe_Tour_Part_2_3_4K_dQw4w9WgXcQ.txt beside it: Notes (full title,
 # author, URL, published and downloaded times, any license the site states,
 # the video's filename), the description, then the captions as plain text,
 # fetched once the video is done. The .mp4 carries the same notes in its
@@ -151,28 +152,30 @@ HISTORY = ("done", "failed", "rejected")
 PENDING = ("checking", "queued", "retry", "retry-cookies", "downloading")
 DOWNLOADABLE = ("retry-cookies", "queued", "retry")
 # The filename: Author-Title_id in A-Z a-z 0-9 - _ only. /etc/yt-dlp.conf gives
-# plain yt-dlp the same rule; change one, change both. The author is the first
-# run of A-Z a-z 0-9 in the uploader's name (the channel's if there is no
-# uploader), after #S, and ends at the -; with none the name starts at the
+# plain yt-dlp the same rule; change one, change both. The author is up to the
+# first three runs of A-Z a-z 0-9 in the uploader's name (the channel's if there
+# is no uploader), after #S, run together, and ends at the -; with none the name starts at the
 # title, as it did before there was an author. The title starts from
 # %(title)#S -- --restrict-filenames for that one field -- which turns é into
 # e and blanks what has no ASCII form. The regexes then keep only the
 # alphabet, squeeze each run of separators holding a _ into one _ (so ' - '
-# goes and Spider-Man stays), cut at 120 and trim the ends. The id gets only
+# goes and Spider-Man stays). Author-Title is cut at 140, so a long name
+# shortens the title, and its ends trimmed. The id gets only
 # the first regex, because #S would trim a YouTube id's own leading - or _.
 # Both are copies, so --print %(title)s and yt-dlp's own use of id are
 # untouched; a title with nothing left (all CJK, say) names the file by id alone.
 NAME_OPTS = ["--parse-metadata", "%(uploader,channel|)#S:(?s)(?P<safe_author>.+)",
              "--replace-in-metadata", "safe_author", "^[^A-Za-z0-9]+", "",
-             "--replace-in-metadata", "safe_author", "(?s)[^A-Za-z0-9].*", "",
+             "--replace-in-metadata", "safe_author", r"(?s)^([A-Za-z0-9]+)(?:[^A-Za-z0-9]+([A-Za-z0-9]+))?(?:[^A-Za-z0-9]+([A-Za-z0-9]+))?.*", r"\1\2\3",
              "--parse-metadata", "%(title)#S:(?s)(?P<safe_title>.+)",
              "--replace-in-metadata", "safe_title", "[^A-Za-z0-9_-]+", "_",
              "--replace-in-metadata", "safe_title", "[-_]*_[-_]*", "_",
-             "--replace-in-metadata", "safe_title", "(?<=^.{120}).+", "",
-             "--replace-in-metadata", "safe_title", "^[-_]+|[-_]+$", "",
+             "--parse-metadata", "%(safe_author&{}-|)s%(safe_title|)s:(?s)(?P<safe_head>.+)",
+             "--replace-in-metadata", "safe_head", "(?<=^.{140}).+", "",
+             "--replace-in-metadata", "safe_head", "^[-_]+|[-_]+$", "",
              "--parse-metadata", "id:(?s)(?P<safe_id>.+)",
              "--replace-in-metadata", "safe_id", "[^A-Za-z0-9_-]+", "_"]
-NAME = "%(safe_author&{}-|)s%(safe_title&{}_|)s%(safe_id)s.%(ext)s"
+NAME = "%(safe_head&{}_|)s%(safe_id)s.%(ext)s"
 # The notes, in the video file itself. --embed-metadata writes the full title,
 # the uploader's full name (as artist), the upload date and the description;
 # the comment gets the lines a transcript's Notes begin with, the URL and the

@@ -151,7 +151,9 @@ norm_log() {
     sed -E -e "s|$1|HOME|g" -e 's/^[0-9-]+ [0-9:]+ \[[0-9]+\] //' -e '/took run\.lock/d' \
         -e '/stopped while|yt-dlp exited|deleted from the queue while downloading/d' \
         -e 's/\(pid [0-9]+\)/(pid P)/' -e 's/checked in [0-9.]+ s/checked in T s/' -e 's/after [0-9:]+/after T/g' \
-        -e 's/took [0-9:]+\)/took T)/g' -e 's/, [0-9:]+ in([,;])/, T in\1/' "$1/.local/share/ytq/ytq.log" 2>/dev/null
+        -e 's/took [0-9:]+\)/took T)/g' -e 's/, [0-9:]+ in([,;])/, T in\1/' \
+        -e "s/ --print 'after_move:NOTES %\(\.\{[^}]*\}\)j'//" -e 's/ --write-thumbnail --convert-thumbnails jpg//' \
+        -e '/: tagged /d' -e '/: not tagged, /d' "$1/.local/share/ytq/ytq.log" 2>/dev/null
 }
 
 echo "  --      ytq-window-crosscheck: $YTQ beside the window of $SPEC, in tmux $(tmux -V | cut -d' ' -f2)"

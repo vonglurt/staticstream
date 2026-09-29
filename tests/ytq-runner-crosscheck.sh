@@ -96,6 +96,8 @@ collect() { # <scenario> <side> <home>
         -e 's/\(pid [0-9]+\)/(pid P)/' -e 's/checked in [0-9.]+ s/checked in T s/' -e 's/after [0-9.:]+/after T/g' \
         -e 's/took [0-9:]+\)/took T)/g' -e 's/, [0-9:]+ in([,;])/, T in\1/' \
         -e 's/%\(\.\{[^}]*\}\)j/%(.{FIELDS})j/g' \
+        -e "s/ --print 'after_move:NOTES %\(\.\{FIELDS\}\)j'//" -e 's/ --write-thumbnail --convert-thumbnails jpg//' \
+        -e '/: tagged /d' -e '/: not tagged, /d' \
         -e '/: fetching the discussion,/d' -e '/--write-comments/d' \
         -e '/: discussion run exited/d' -e '/: discussion:/d' "$h/.local/share/ytq/ytq.log" > "$W/$s.log.$side" 2>/dev/null
     python3 -c '
@@ -134,7 +136,9 @@ compare() { # <scenario> <label>
 # equivalent of -- the comment fetch of phase 5 -- so its four lines come out of
 # the log before the two are compared, and the yt-dlp field lists are collapsed
 # to %(.{FIELDS})j because the Rust asks for more fields than the Python did.
-# Both are done in collect() above. The step still RUNS in every scenario, which
+# The same goes for tagging the video with what ytq knows: the thumbnail the
+# transcript run is asked for, the NOTES line the download run now always
+# prints, and the tagging's one line. Both are done in collect() above. The step still RUNS in every scenario, which
 # is the part worth having: what is filtered is the record of a step the
 # specification never had, not the step itself.
 #
@@ -158,6 +162,10 @@ compare() { # <scenario> <label>
 # `where_it_was_posted_is_read_from_whichever_field_the_site_means_by_it` in
 # src/ytq/runner.rs, on a fixture per site, which is a better oracle than a
 # program written before any of those sites was asked for.
+#
+# The rows and sections of the video's full record -- Handle to Subtitles,
+# Tags and Chapters -- go the same way, and are held the same way: by
+# `the_notes_carry_every_field_the_site_gave_and_nothing_it_did_not`.
 notes_only() {  # <file>
     awk '
         /^Discussion  \(/ { rest = 1 }
@@ -165,7 +173,8 @@ notes_only() {  # <file>
         /^Stats  \(read /  { stats = 1; next }
         stats && /^$/     { stats = 0; next }
         stats             { next }
-        /^  (Where|Site|Duration): / { next }
+        /^(Tags|Chapters)$/ { stats = 1; next }
+        /^  (Where|Site|Duration|Handle|Channel|Language|Category|Location|Live|Kind|Visibility|Age limit|Format|Thumbnail|Subtitles): / { next }
         /^$/              { held++; next }
                           { while (held-- > 0) print ""
                             sub(/^  Downloaded: .*/, "  Downloaded: T"); print }
@@ -299,7 +308,7 @@ if [ "${YTQ_REAL:-1}" != 0 ] && timeout 60 yt-dlp --ignore-config --simulate --n
             if [ "$1" = py ]; then set -- python3 "$2"; else set -- "$3" ytq; fi
             "$@" add --no-run https://www.youtube.com/watch?v=jNQXAC9IVRw && "$@" run --quiet' _ "$side" "$W/ytq.py" "$SSTR" > /dev/null 2>&1
         (cd "$H/out" && ls) > "$W/H.files.$side"
-        for f in "$H"/out/*.mp4; do ffprobe -v error -show_entries format_tags=title,artist,date,comment -of default=nw=1 "$f" | sed -E 's/^(Downloaded: ).*/\1T/'; done > "$W/H.tags.$side"
+        for f in "$H"/out/*.mp4; do ffprobe -v error -show_entries format_tags=title,artist,date -of default=nw=1 "$f"; done > "$W/H.tags.$side"
         for f in "$H"/out/*.txt; do notes_only "$f"; done > "$W/H.txt.$side"
         python3 -c 'import json,sys; print([(i["status"], i["file"].replace(sys.argv[2], "HOME"), i["title"], i["quality"]) for i in json.load(open(sys.argv[1]))])' \
             "$H/.local/share/ytq/queue.json" "$H" > "$W/H.queue.$side"
@@ -308,6 +317,18 @@ if [ "${YTQ_REAL:-1}" != 0 ] && timeout 60 yt-dlp --ignore-config --simulate --n
     same "H: real download: the tags in the MP4" "$W/H.tags.py" "$W/H.tags.rs"
     same "H: real download: the transcript and its Notes" "$W/H.txt.py" "$W/H.txt.rs"
     same "H: real download: the queue entry" "$W/H.queue.py" "$W/H.queue.rs"
+    # What only the Rust writes into the video, checked against the video
+    # itself: the notes as its comment, the transcript as its lyrics, the
+    # zoo's three chapters, and the thumbnail as its cover.
+    f=$(ls "$H"/out/*.mp4 2>/dev/null | head -1); t=$(ls "$H"/out/*.txt 2>/dev/null | head -1)
+    if [ -n "$f" ] && ffprobe -v error -show_entries format_tags=comment -of default=nw=1:nk=1 "$f" | head -3 | grep -qx 'Notes' \
+        && ffprobe -v error -show_entries format_tags=lyrics -of default=nw=1:nk=1 "$f" | head -1 | grep -qxF "$(sed -n '/^Transcript$/{n;p;q;}' "$t")" \
+        && [ "$(ffprobe -v error -show_entries chapter=start_time -of csv=p=0 "$f" | wc -l)" = 3 ] \
+        && ffprobe -v error -show_entries stream_disposition=attached_pic -of csv=p=0 "$f" | grep -qx 1; then
+        ok "H: real download: the Rust's MP4 carries its notes, transcript, chapters and cover"
+    else
+        bad "H: real download: the Rust's MP4 lacks its notes, transcript, chapters or cover: $f"
+    fi
 else
     printf '  --      H skipped: no network, or YTQ_REAL=0\n'
 fi

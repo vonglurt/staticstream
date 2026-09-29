@@ -62,7 +62,7 @@ tmpl = after("-o")
 
 
 def name(ext):
-    return (tmpl.replace("%(safe_author&{}-|)s", "Fake-").replace("%(safe_title&{}_|)s", "Fake_Title_")
+    return (tmpl.replace("%(safe_head&{}_|)s", "Fake-Fake_Title_")
             .replace("%(safe_id)s", vid).replace("%(ext)s", ext).replace("%%", "%"))
 
 

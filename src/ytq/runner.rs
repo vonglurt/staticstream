@@ -37,16 +37,17 @@ pub const COOKIE_WORDS: [&str; 13] =
 pub const NAME_OPTS: &[&str] = &[
     "--parse-metadata", "%(uploader,channel|)#S:(?s)(?P<safe_author>.+)",
     "--replace-in-metadata", "safe_author", "^[^A-Za-z0-9]+", "",
-    "--replace-in-metadata", "safe_author", "(?s)[^A-Za-z0-9].*", "",
+    "--replace-in-metadata", "safe_author", r"(?s)^([A-Za-z0-9]+)(?:[^A-Za-z0-9]+([A-Za-z0-9]+))?(?:[^A-Za-z0-9]+([A-Za-z0-9]+))?.*", r"\1\2\3",
     "--parse-metadata", "%(title)#S:(?s)(?P<safe_title>.+)",
     "--replace-in-metadata", "safe_title", "[^A-Za-z0-9_-]+", "_",
     "--replace-in-metadata", "safe_title", "[-_]*_[-_]*", "_",
-    "--replace-in-metadata", "safe_title", "(?<=^.{120}).+", "",
-    "--replace-in-metadata", "safe_title", "^[-_]+|[-_]+$", "",
+    "--parse-metadata", "%(safe_author&{}-|)s%(safe_title|)s:(?s)(?P<safe_head>.+)",
+    "--replace-in-metadata", "safe_head", "(?<=^.{140}).+", "",
+    "--replace-in-metadata", "safe_head", "^[-_]+|[-_]+$", "",
     "--parse-metadata", "id:(?s)(?P<safe_id>.+)",
     "--replace-in-metadata", "safe_id", "[^A-Za-z0-9_-]+", "_",
 ];
-pub const NAME: &str = "%(safe_author&{}-|)s%(safe_title&{}_|)s%(safe_id)s.%(ext)s";
+pub const NAME: &str = "%(safe_head&{}_|)s%(safe_id)s.%(ext)s";
 pub const META_OPTS: &[&str] = &[
     "--embed-metadata",
     "--parse-metadata",
@@ -181,12 +182,30 @@ pub fn content_type(path: &str) -> &'static str {
     }
 }
 
+/// The fields of yt-dlp's info that ytq keeps: the notes, the capture's
+/// header and the tags written into the video are all made from these. One
+/// list for both runs, so a field added here reaches all three.
+macro_rules! info_fields {
+    () => {
+        "webpage_url,webpage_url_domain,extractor_key,license,title,uploader,uploader_id,uploader_url,\
+         channel,channel_id,channel_url,channel_follower_count,duration,timestamp,upload_date,description,\
+         view_count,like_count,dislike_count,repost_count,comment_count,\
+         tags,categories,language,location,chapters,heatmap,live_status,availability,age_limit,media_type,thumbnail,\
+         resolution,vcodec,acodec,fps"
+    };
+}
+
 /// What yt-dlp prints after the move when a capture will be made: the fields
 /// its header carries.
-pub const NOTES_PRINT: &str =
-    "after_move:NOTES %(.{webpage_url,webpage_url_domain,extractor_key,license,title,uploader,uploader_id,\
-     channel,channel_id,duration,timestamp,upload_date,description,\
-     view_count,like_count,dislike_count,repost_count,comment_count})j";
+pub const NOTES_PRINT: &str = concat!("after_move:NOTES %(.{", info_fields!(), "})j");
+
+/// The transcript run's copy of the same fields, with the captions on offer.
+const META_PRINT: &str = concat!("video:META %(.{", info_fields!(), ",subtitles})j");
+
+/// The fields that describe the file downloaded rather than the video. A run
+/// that downloads nothing still fills them, from the format it would have
+/// chosen, so they are taken from the download's own run or not at all.
+const FORMAT_FIELDS: [&str; 4] = ["resolution", "vcodec", "acodec", "fps"];
 
 fn file_sha256(path: &str) -> io::Result<String> {
     let mut f = fs::File::open(path)?;
@@ -457,13 +476,12 @@ impl Runner {
         for a in ["--no-playlist", "--newline", "--no-simulate", "-f", &format, "--merge-output-format", "mp4", "--progress", "--no-quiet", "--progress-template", &progress_template(), "--print", "after_move:FILE %(filepath)s"] {
             cmd.push(a.to_string());
         }
-        // A capture's header wants the source, the license and who made it.
-        // Only asked for when a capture will be made: with OUTPUT=mp4 the
-        // command is the Python ytq's, argument for argument.
-        if output_of(&self.s) != "mp4" {
-            cmd.push("--print".into());
-            cmd.push(NOTES_PRINT.into());
-        }
+        // A capture's header wants the source, the license and who made it,
+        // and the tags written into the video want all of it. Asked for every
+        // time: with OUTPUT=mp4 there is no capture, but there are still tags,
+        // and a site with no transcript run has no other source for them.
+        cmd.push("--print".into());
+        cmd.push(NOTES_PRINT.into());
         cmd.push("-o".into());
         cmd.push(out_tmpl.clone());
         cmd.push(url.clone());
@@ -628,6 +646,56 @@ impl Runner {
             if let Ok(m) = fs::metadata(&fname) {
                 self.log(&format!("{tag}: {fname} is {}", fmt_size(m.len() as f64)));
             }
+            let subs = self.setting("SUBS");
+            let ffmpeg = which("ffmpeg").is_some();
+            let taggable = ffmpeg && matches!(splitext(&fname).1.to_lowercase().as_str(), ".mp4" | ".m4v" | ".mov" | ".m4a");
+            // The transcript run comes before the capture, not after it: what
+            // it brings back is written into the video, and a capture's payload
+            // is the video byte for byte, so the video must be final first.
+            // Nothing is written to the .txt until the capture is settled, so
+            // the notes can name the file that was kept.
+            let mut fetched: Option<Result<Fetched, String>> = None;
+            if !fname.is_empty() && !subs.is_empty() && first_id(&url).is_some() {
+                live.set("phase", Value::str("fetching the transcript"));
+                live.set("since", Value::Num(sys::now()));
+                live.set("last", Value::str(""));
+                live.set("dest", Value::str(format!("{}.txt", splitext(&fname).0)));
+                if self.update(&url, vec![("progress", Value::str("transcript")), ("live", live.clone())]).is_some() {
+                    let tmpl = format!("{}.%(ext)s", splitext(&fname).0.replace('%', "%%"));
+                    let tcmd = if with_cookies { brave_cmd(&self.s) } else { vec!["yt-dlp".into()] };
+                    fetched = Some(self.fetch_transcript(&url, &tmpl, &tcmd, taggable));
+                }
+            }
+            let info = match &fetched {
+                Some(Ok(f)) => merged(&notes, &f.meta),
+                _ => notes.clone(),
+            };
+            let cover = match &fetched {
+                Some(Ok(f)) => f.cover.clone(),
+                _ => None,
+            };
+            // The notes, the transcript, the chapters and the cover, in the
+            // video itself: a file that is copied away from its .txt, or
+            // outlives it, still says what it is and what was said in it.
+            if taggable {
+                live.set("phase", Value::str("writing the notes into the video"));
+                live.set("since", Value::Num(sys::now()));
+                live.set("last", Value::str(""));
+                live.set("dest", Value::str(&fname));
+                if self.update(&url, vec![("progress", Value::str("tagging")), ("live", live.clone())]).is_some() {
+                    let captions = match &fetched {
+                        Some(Ok(f)) => f.captions.as_ref().ok().map(|(l, t)| (l.as_str(), t.as_str())),
+                        _ => None,
+                    };
+                    match self.tag_video(&url, &fname, &info, captions, cover.as_deref()) {
+                        Ok(what) => self.log(&format!("{tag}: tagged {fname}: {what}")),
+                        Err(why) => self.log(&format!("{tag}: not tagged, so the video is as yt-dlp left it: {why}")),
+                    }
+                }
+            }
+            if let Some(c) = &cover {
+                let _ = fs::remove_file(c);
+            }
             // Static Stream. With OUTPUT=sstr (the default) or both, the download
             // is recorded into ARCHIVE_DIR and read back; with sstr the MP4 goes
             // only once the capture verifies and its payload is the MP4 byte for
@@ -644,7 +712,7 @@ impl Runner {
                 live.set("last", Value::str(""));
                 live.set("dest", Value::str(&sstr));
                 self.update(&url, vec![("progress", Value::str("archiving")), ("live", live.clone())]);
-                match self.archive(&tag, &url, &fname, &sstr, &notes) {
+                match self.archive(&tag, &url, &fname, &sstr, &info) {
                     Ok(()) => {
                         stem = splitext(&sstr).0.to_string();
                         if output == "sstr" {
@@ -665,44 +733,47 @@ impl Runner {
                 }
             }
             let mut also = "";
-            let subs = self.setting("SUBS");
-            // Two jobs, not one. Fetching the captions needs a YouTube video and
-            // a SUBS list; writing the notes needs neither, is owed to every
-            // download, and costs no second yt-dlp run at all -- the metadata is
-            // already in hand from the run that has just finished.
-            if !fname.is_empty() && !subs.is_empty() && first_id(&url).is_some() {
-                live.set("phase", Value::str("fetching the transcript"));
-                live.set("since", Value::Num(sys::now()));
-                live.set("last", Value::str(""));
-                live.set("dest", Value::str(format!("{stem}.txt")));
-                if self.update(&url, vec![("progress", Value::str("transcript")), ("live", live.clone())]).is_some() {
-                    let tmpl = format!("{}.%(ext)s", stem.replace('%', "%%"));
-                    let tcmd = if with_cookies { brave_cmd(&self.s) } else { vec!["yt-dlp".into()] };
-                    match self.transcript(&url, &tmpl, &tcmd, Some(&video)) {
-                        Ok(txt) => {
-                            self.log(&format!("{tag}: transcript: {txt}"));
-                            also = " + transcript";
-                        }
-                        Err(why) => {
-                            self.log(&format!("{tag}: transcript: none -- {why}"));
-                            also = " (no transcript)";
-                        }
+            // Two jobs, not one. The transcript needs a YouTube video and a
+            // SUBS list; the notes need neither and are owed to every download,
+            // a video whose captions could not be had included.
+            let captions = match fetched {
+                Some(Ok(f)) => Some(f.captions),
+                Some(Err(why)) => Some(Err(why)),
+                None => None,
+            };
+            if let Some(Ok((lang, text))) = &captions {
+                match self.write_transcript(&url, &stem, Some(&video), &info, lang, text) {
+                    Ok(txt) => {
+                        self.log(&format!("{tag}: transcript: {txt}"));
+                        also = " + transcript";
+                    }
+                    Err(why) => {
+                        self.log(&format!("{tag}: transcript: none -- {why}"));
+                        also = " (no transcript)";
                     }
                 }
             } else if !fname.is_empty() {
+                if let Some(Err(why)) = &captions {
+                    self.log(&format!("{tag}: transcript: none -- {why}"));
+                    also = " (no transcript)";
+                }
                 live.set("phase", Value::str("writing the notes"));
                 live.set("since", Value::Num(sys::now()));
                 live.set("last", Value::str(""));
                 live.set("dest", Value::str(format!("{stem}.txt")));
                 if self.update(&url, vec![("progress", Value::str("notes")), ("live", live.clone())]).is_some() {
-                    match self.notes_file(&url, &stem, &video, &notes) {
+                    match self.notes_file(&url, &stem, &video, &info) {
                         Ok(txt) => {
                             self.log(&format!("{tag}: notes: {txt}"));
-                            also = " + notes";
+                            if captions.is_none() {
+                                also = " + notes";
+                            }
                         }
                         Err(why) => {
                             self.log(&format!("{tag}: notes: none -- {why}"));
-                            also = " (no notes)";
+                            if captions.is_none() {
+                                also = " (no notes)";
+                            }
                         }
                     }
                 }
@@ -719,7 +790,7 @@ impl Runner {
                 live.set("dest", Value::str(format!("{stem}.txt")));
                 if self.update(&url, vec![("progress", Value::str("discussion")), ("live", live.clone())]).is_some() {
                     let ccmd = if with_cookies { brave_cmd(&self.s) } else { vec!["yt-dlp".into()] };
-                    match self.discussion_file(&url, &stem, &video, &notes, &ccmd, &cap) {
+                    match self.discussion_file(&url, &stem, &video, &info, &ccmd, &cap) {
                         Ok(0) => self.log(&format!("{tag}: discussion: none")),
                         Ok(n) => {
                             self.log(&format!("{tag}: discussion: {n} comments in {stem}.txt"));
@@ -1047,17 +1118,54 @@ impl Runner {
     /// YouTube answers 429 to captions far sooner than to video -- fails the whole
     /// run it is part of, and would put a finished video back in the queue.
     pub fn transcript(&self, url: &str, outtmpl: &str, cmd: &[String], video: Option<&str>) -> Result<String, String> {
+        let got = self.fetch_transcript(url, outtmpl, cmd, false)?;
+        let (lang, text) = got.captions?;
+        let video = match video {
+            Some(v) => Some(v.to_string()),
+            None => {
+                let mut all = siblings(&got.stem, |_, _| true);
+                all.sort();
+                all.into_iter()
+                    .find(|p| matches!(splitext(p).1.to_lowercase().as_str(), ".mp4" | ".mkv" | ".webm" | ".m4v" | ".mov"))
+                    .map(|p| basename(&p).to_string())
+            }
+        };
+        self.write_transcript(url, &got.stem, video.as_deref(), &got.meta, &lang, &text)
+    }
+
+    /// `{stem}.txt`: the notes, then the captions as plain text.
+    fn write_transcript(&self, url: &str, stem: &str, video: Option<&str>, meta: &Value, lang: &str, text: &str) -> Result<String, String> {
+        let body = format!("{}{}\n", notes(meta, url, Some(lang), video), text);
+        let path = format!("{stem}.txt");
+        fs::write(&path, body).map_err(|e| format!("cannot write the transcript: {e}"))?;
+        let words = text.split_whitespace().count();
+        self.log(&format!("{}: wrote {path}: {words} words from the {lang} captions", short(url)));
+        Ok(path)
+    }
+
+    /// The transcript run: the captions as plain text, the video's info as it
+    /// stands now, and -- with `cover` -- its thumbnail as `{stem}.jpg` for the
+    /// video's cover. Nothing is written but that picture; the captions' .vtt
+    /// files are read and removed. `Err` only when yt-dlp could not be run at
+    /// all: a run that found no captions still brings back the info.
+    fn fetch_transcript(&self, url: &str, outtmpl: &str, cmd: &[String], cover: bool) -> Result<Fetched, String> {
         let subs = Some(self.setting("SUBS")).filter(|s| !s.is_empty()).unwrap_or_else(|| DEFAULT_SUBS.into());
         let mut full: Vec<String> = cmd.to_vec();
         full.extend(NAME_OPTS.iter().map(|s| s.to_string()));
         for a in [
             "--skip-download", "--no-simulate", "--no-playlist", "--no-warnings", "--write-subs", "--write-auto-subs", "--sub-langs", &subs,
-            "--sub-format", "vtt", "--print", "video:STEM %(filename)s",
-            "--print", "video:META %(.{title,uploader,uploader_id,channel,channel_id,duration,webpage_url,webpage_url_domain,\
-             extractor_key,timestamp,upload_date,license,description,subtitles,\
-             view_count,like_count,dislike_count,repost_count,comment_count})j",
-            "-o", outtmpl, url,
+            "--sub-format", "vtt", "--print", "video:STEM %(filename)s", "--print", META_PRINT,
         ] {
+            full.push(a.to_string());
+        }
+        // The picture YouTube shows for the video, as a JPEG an MP4 can carry:
+        // its own is usually WebP, which the MP4 muxer will not take.
+        if cover {
+            for a in ["--write-thumbnail", "--convert-thumbnails", "jpg"] {
+                full.push(a.to_string());
+            }
+        }
+        for a in ["-o", outtmpl, url] {
             full.push(a.to_string());
         }
         let tag = short(url);
@@ -1093,6 +1201,11 @@ impl Runner {
                 }
             }
         }
+        // Nothing was downloaded, so these describe a format nobody has.
+        if let Value::Obj(m) = &mut meta {
+            m.retain(|(k, _)| !FORMAT_FIELDS.contains(&k.as_str()));
+        }
+        let cover = Some(format!("{stem}.jpg")).filter(|c| cover && !stem.is_empty() && Path::new(c).is_file());
         // One file per language that matched: stem.en.vtt, stem.en-orig.vtt. The
         // shortest name, the plain language, is taken.
         let mut vtts = if stem.is_empty() { Vec::new() } else { siblings(&stem, |name, base| name.len() >= base.len() + 5 && name.ends_with(".vtt")) };
@@ -1101,41 +1214,177 @@ impl Runner {
             "{tag}: captions written: {}",
             if vtts.is_empty() { "none".to_string() } else { vtts.iter().map(|v| basename(v)).collect::<Vec<_>>().join(", ") }
         ));
-        if vtts.is_empty() {
+        let captions = if vtts.is_empty() {
             let last = errs.last().map(|s| s.to_string()).unwrap_or_else(|| format!("no captions matching {subs}"));
-            return Err(first_chars(&last, 300));
-        }
-        let lang = vtts[0][stem.len() + 1..vtts[0].len() - ".vtt".len()].to_string();
-        let result = (|| -> Result<Option<String>, String> {
-            let text = textwrap::vtt_text(Path::new(&vtts[0])).map_err(|e| format!("cannot write the transcript: {e}"))?;
-            if text.is_empty() {
-                return Ok(None);
+            Err(first_chars(&last, 300))
+        } else {
+            let lang = vtts[0][stem.len() + 1..vtts[0].len() - ".vtt".len()].to_string();
+            match textwrap::vtt_text(Path::new(&vtts[0])) {
+                Err(e) => Err(format!("cannot write the transcript: {e}")),
+                Ok(text) if text.is_empty() => Err(format!("the {lang} captions are empty")),
+                Ok(text) => Ok((lang, text)),
             }
-            let video = match video {
-                Some(v) => Some(v.to_string()),
-                None => {
-                    let mut all = siblings(&stem, |_, _| true);
-                    all.sort();
-                    all.into_iter()
-                        .find(|p| matches!(splitext(p).1.to_lowercase().as_str(), ".mp4" | ".mkv" | ".webm" | ".m4v" | ".mov"))
-                        .map(|p| basename(&p).to_string())
-                }
-            };
-            let body = format!("{}{}\n", notes(&meta, url, Some(&lang), video.as_deref()), text);
-            fs::write(format!("{stem}.txt"), body).map_err(|e| format!("cannot write the transcript: {e}"))?;
-            let words = text.split_whitespace().count();
-            self.log(&format!("{tag}: wrote {stem}.txt: {words} words from the {lang} captions"));
-            Ok(Some(text))
-        })();
+        };
         for v in &vtts {
             let _ = fs::remove_file(v);
         }
-        match result {
-            Ok(Some(_)) => Ok(format!("{stem}.txt")),
-            Ok(None) => Err(format!("the {lang} captions are empty")),
-            Err(e) => Err(e),
+        Ok(Fetched { stem, meta, captions, cover })
+    }
+
+    /// Write what ytq knows into the video file itself: the fields of `meta`
+    /// as its tags, the transcript as its lyrics, its chapters, and `cover` as
+    /// its picture. A copy is made and renamed over the original, so a failure
+    /// at any point leaves the file as yt-dlp left it.
+    ///
+    /// Everything goes through an FFMETADATA file rather than `-metadata`: a
+    /// long talk's transcript is past the 128 KiB Linux allows one argument.
+    fn tag_video(&self, url: &str, file: &str, meta: &Value, captions: Option<(&str, &str)>, cover: Option<&str>) -> Result<String, String> {
+        let (stem, ext) = splitext(file);
+        let tmp = format!("{stem}.tagging{ext}");
+        let ffmeta = format!("{stem}.ffmetadata");
+        fs::write(&ffmeta, ffmetadata(meta, url, captions, basename(file), sys::now())).map_err(|e| format!("cannot write {ffmeta}: {e}"))?;
+        // The cover goes after the video it belongs to, so the video stays the
+        // first stream a player finds; its index is one past the real ones.
+        let videos = match run_timeout(Command::new("ffprobe").args(["-v", "error", "-select_streams", "V", "-show_entries", "stream=index", "-of", "csv=p=0", file]), 60) {
+            Ran::Done(0, o, _) => splitlines(&o).iter().filter(|l| !l.trim().is_empty()).count(),
+            _ => 0,
+        };
+        let cover = cover.filter(|_| videos > 0);
+        let mut cmd = Command::new("ffmpeg");
+        cmd.args(["-nostdin", "-v", "error", "-y", "-i", file, "-i", &ffmeta]);
+        if let Some(c) = cover {
+            cmd.args(["-i", c]);
+        }
+        // V, not v: a cover from before is left out rather than doubled.
+        cmd.args(["-map", "0:V?", "-map", "0:a?", "-map", "0:s?"]);
+        if cover.is_some() {
+            cmd.args(["-map", "2:v"]);
+        }
+        cmd.args(["-map_metadata", "1", "-map_chapters", "1", "-c", "copy"]);
+        if cover.is_some() {
+            cmd.args([format!("-disposition:v:{videos}"), "attached_pic".to_string()]);
+        }
+        cmd.arg(&tmp);
+        let t0 = sys::now();
+        let ran = run_timeout(&mut cmd, 1800);
+        let _ = fs::remove_file(&ffmeta);
+        let why = match ran {
+            Ran::Done(0, _, _) => match fs::rename(&tmp, file) {
+                Ok(()) => None,
+                Err(e) => Some(format!("cannot replace {file}: {e}")),
+            },
+            Ran::Done(c, _, e) => Some(format!("ffmpeg exited {c}: {}", first_chars(splitlines(py_strip(&e)).last().copied().unwrap_or(""), 300))),
+            Ran::TimedOut => Some("ffmpeg timed out after 1800 seconds".to_string()),
+            Ran::Failed(e) => Some(format!("cannot run ffmpeg: {e}")),
+        };
+        if let Some(why) = why {
+            let _ = fs::remove_file(&tmp);
+            return Err(why);
+        }
+        let mut what = vec!["notes".to_string()];
+        if let Some((lang, text)) = captions {
+            what.push(format!("{} words of {lang} transcript", text.split_whitespace().count()));
+        }
+        let count = |k: &str| meta.get(k).and_then(|v| v.as_array()).map_or(0, |a| a.len());
+        if count("tags") > 0 {
+            what.push(format!("{} tags", count("tags")));
+        }
+        if count("chapters") > 0 {
+            what.push(format!("{} chapters", count("chapters")));
+        }
+        if cover.is_some() {
+            what.push("cover".to_string());
+        }
+        Ok(format!("{} in {}", what.join(", "), fmt_secs(sys::now() - t0)))
+    }
+}
+
+/// What the transcript run brought back.
+struct Fetched {
+    stem: String,
+    meta: Value,
+    captions: Result<(String, String), String>,
+    cover: Option<String>,
+}
+
+/// The download's info with the transcript run's laid over it: the later run
+/// read the counts later, and has the captions on offer; the download alone
+/// knows the format it got.
+fn merged(download: &Value, later: &Value) -> Value {
+    let mut out = download.clone();
+    if let Value::Obj(m) = later {
+        for (k, v) in m {
+            if !matches!(v, Value::Null) {
+                out.set(k, v.clone());
+            }
         }
     }
+    out
+}
+
+/// A value for an FFMETADATA file: `=`, `;`, `#`, `\` and newlines escaped.
+fn ffescape(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    for c in s.chars() {
+        if matches!(c, '=' | ';' | '#' | '\\' | '\n') {
+            out.push('\\');
+        }
+        out.push(c);
+    }
+    out
+}
+
+/// The FFMETADATA file for `tag_video()`: every tag the MP4 is to carry, and
+/// its chapters. The file's tags replace the ones yt-dlp wrote, so the ones it
+/// wrote are written again here, from the same fields: title, artist, date,
+/// genre, description and synopsis.
+///
+/// The comment is the notes block of the .txt -- every row, the counts and
+/// what they were read at, the tags and the chapters -- so the file on its own
+/// says what the text beside it says, less the description (its own tag) and
+/// the transcript (the lyrics).
+pub fn ffmetadata(meta: &Value, url: &str, captions: Option<(&str, &str)>, video: &str, now: f64) -> String {
+    let pick = |k: &str| meta.get(k).filter(|v| truthy(Some(v))).map(py_str);
+    let list = |k: &str| -> Vec<String> { meta.get(k).and_then(|v| v.as_array()).map(|a| a.iter().map(py_str).filter(|s| !s.is_empty()).collect()).unwrap_or_default() };
+    let mut tags: Vec<(&str, String)> = Vec::new();
+    if let Some(t) = pick("title") {
+        tags.push(("title", t));
+    }
+    if let Some(a) = pick("uploader").or_else(|| pick("channel")) {
+        tags.push(("artist", a));
+    }
+    if let Some(d) = pick("upload_date") {
+        tags.push(("date", d));
+    }
+    if !list("categories").is_empty() {
+        tags.push(("genre", list("categories").join(", ")));
+    }
+    if let Some(d) = pick("description") {
+        tags.push(("description", d.clone()));
+        tags.push(("synopsis", d));
+    }
+    if !list("tags").is_empty() {
+        tags.push(("keywords", list("tags").join(", ")));
+    }
+    if let Some(l) = pick("license") {
+        tags.push(("copyright", l));
+    }
+    let head = notes_head(meta, url, captions.map(|c| c.0), Some(video), now);
+    tags.push(("comment", py_strip(&head).to_string()));
+    if let Some((_, text)) = captions {
+        tags.push(("lyrics", text.to_string()));
+    }
+    let mut out = String::from(";FFMETADATA1\n");
+    for (k, v) in tags {
+        out.push_str(&format!("{k}={}\n", ffescape(&v)));
+    }
+    let duration = meta.get("duration").and_then(|v| v.as_num());
+    for c in meta.get("chapters").and_then(|v| v.as_array()).unwrap_or(&[]) {
+        let (Some(start), Some(title)) = (c.get("start_time").and_then(|v| v.as_num()), c.get("title").map(py_str)) else { continue };
+        let end = c.get("end_time").and_then(|v| v.as_num()).or(duration).unwrap_or(start);
+        out.push_str(&format!("\n[CHAPTER]\nTIMEBASE=1/1000\nSTART={}\nEND={}\ntitle={}\n", (start * 1000.0).round() as i64, (end * 1000.0).round() as i64, ffescape(&title)));
+    }
+    out
 }
 
 /// `glob.glob(glob.escape(stem) + ".*")`, with a test on each name: the files
@@ -1202,6 +1451,28 @@ pub fn capture_meta(notes: &Value, url: &str, file: &str, now: f64) -> Value {
     if let Some(Value::Num(t)) = notes.get("timestamp") {
         meta.set("published", Value::str(stamp(*t)));
     }
+    // The rest of what the notes gained, by the same argument: the channel
+    // by its lasting URL, the language, and the uploader's own words for it.
+    if let Some(c) = pick("channel_url").or_else(|| pick("uploader_url")) {
+        meta.set("channel_url", Value::str(c));
+    }
+    for k in ["language", "location"] {
+        if let Some(v) = pick(k) {
+            meta.set(k, Value::str(v));
+        }
+    }
+    for (k, from) in [("categories", "categories"), ("tags", "tags"), ("chapters", "chapters")] {
+        if let Some(Value::Arr(a)) = notes.get(from).filter(|v| truthy(Some(v))) {
+            let a = if k == "chapters" {
+                a.iter()
+                    .filter_map(|c| Some(Value::obj(vec![("start", Value::Num(c.get("start_time")?.as_num()?)), ("title", Value::str(py_str(c.get("title")?)))])))
+                    .collect()
+            } else {
+                a.clone()
+            };
+            meta.set(k, Value::Arr(a));
+        }
+    }
     // The counts, under the moment they were read -- the same stamp the Stats
     // block carries, for the same reason. A count is a fact about a moment, and
     // the capture is the copy most likely to outlive the page it came from, so
@@ -1212,6 +1483,7 @@ pub fn capture_meta(notes: &Value, url: &str, file: &str, now: f64) -> Value {
         ("downvotes", "dislike_count"),
         ("reposts", "repost_count"),
         ("replies", "comment_count"),
+        ("followers", "channel_follower_count"),
     ]
     .iter()
     .filter_map(|(name, key)| match notes.get(key) {
@@ -1332,6 +1604,21 @@ pub fn notes(meta: &Value, url: &str, lang: Option<&str>, video: Option<&str>) -
 /// Captions row and a Transcript heading on a file with neither would be a
 /// statement about a step that never ran.
 pub fn notes_at(meta: &Value, url: &str, lang: Option<&str>, video: Option<&str>, now: f64) -> String {
+    let mut out = notes_head(meta, url, lang, video, now);
+    let desc = meta.get("description").map(py_str).unwrap_or_default();
+    let desc = py_strip(if truthy(meta.get("description")) { &desc } else { "" });
+    if !desc.is_empty() {
+        out.push_str(&format!("Description\n{desc}\n\n"));
+    }
+    if lang.is_some() {
+        out.push_str("Transcript\n");
+    }
+    out
+}
+
+/// The notes up to the description: the title, Notes, Stats, Tags and
+/// Chapters. The part the video file's comment carries too.
+pub fn notes_head(meta: &Value, url: &str, lang: Option<&str>, video: Option<&str>, now: f64) -> String {
     let when = |t: f64| sys::strftime_local("%Y-%m-%d %H:%M:%S %z", t);
     let pick = |k: &str| meta.get(k).filter(|v| truthy(Some(v))).map(py_str);
     let title = pick("title").unwrap_or_else(|| url.to_string());
@@ -1345,6 +1632,14 @@ pub fn notes_at(meta: &Value, url: &str, lang: Option<&str>, video: Option<&str>
     };
     let author = pick("uploader").or_else(|| pick("channel")).unwrap_or_else(|| "unknown".into());
     let mut rows = vec![("Title", title.clone()), ("Author", author.clone())];
+    let site = pick("extractor_key").unwrap_or_default();
+    // The @handle finds the account again after a change of display name.
+    // On X it is the Where row already.
+    if site != "Twitter" {
+        if let Some(h) = pick("uploader_id").filter(|h| h.starts_with('@')) {
+            rows.push(("Handle", h));
+        }
+    }
     // WHO POSTED IT IS NOT ALWAYS WHERE IT WAS POSTED, and on three of the four
     // sites ytq is pointed at they are different facts. A Reddit video has an
     // uploader (a redditor) and a subreddit, and the subreddit is the half of
@@ -1358,7 +1653,6 @@ pub fn notes_at(meta: &Value, url: &str, lang: Option<&str>, video: Option<&str>
     // by it, and absent when the site gave nothing -- `extractor_key` is
     // yt-dlp's own name for which extractor answered, which is the only
     // honest way to know whose field conventions are in play.
-    let site = pick("extractor_key").unwrap_or_default();
     let where_ = match site.as_str() {
         "Reddit" => pick("channel_id").map(|sub| format!("r/{}", sub.trim_start_matches("r/"))),
         "Twitter" => pick("uploader_id").map(|h| format!("@{}", h.trim_start_matches('@'))),
@@ -1371,6 +1665,10 @@ pub fn notes_at(meta: &Value, url: &str, lang: Option<&str>, video: Option<&str>
         rows.push(("Site", d));
     }
     rows.push(("URL", pick("webpage_url").unwrap_or_else(|| url.to_string())));
+    // The channel by its id, which outlives a rename; the handle's URL if that is all there is.
+    if let Some(c) = pick("channel_url").or_else(|| pick("uploader_url")) {
+        rows.push(("Channel", c));
+    }
     rows.push(("Published", published));
     rows.push(("Downloaded", when(now)));
     // How long the thing runs. Every one of the four sites gives it, and it is
@@ -1379,18 +1677,58 @@ pub fn notes_at(meta: &Value, url: &str, lang: Option<&str>, video: Option<&str>
     if let Some(Value::Num(d)) = meta.get("duration").filter(|v| truthy(Some(v))) {
         rows.push(("Duration", fmt_secs(*d)));
     }
+    if let Some(l) = pick("language") {
+        rows.push(("Language", l));
+    }
+    let categories: Vec<String> = meta.get("categories").and_then(|v| v.as_array()).map(|a| a.iter().map(py_str).filter(|c| !c.is_empty()).collect()).unwrap_or_default();
+    if !categories.is_empty() {
+        rows.push(("Category", categories.join(", ")));
+    }
+    if let Some(l) = pick("location") {
+        rows.push(("Location", l));
+    }
+    // Only what is out of the ordinary: a stream, a Short, a video not public,
+    // one behind an age check. The ordinary case says nothing.
+    match pick("live_status").as_deref() {
+        Some("was_live") | Some("post_live") => rows.push(("Live", "recorded from a live stream".into())),
+        Some("is_live") => rows.push(("Live", "live while it was downloaded".into())),
+        _ => {}
+    }
+    if let Some(k) = pick("media_type").filter(|k| k != "video" && k != "livestream") {
+        rows.push(("Kind", k));
+    }
+    if let Some(a) = pick("availability").filter(|a| a != "public") {
+        rows.push(("Visibility", a));
+    }
+    if let Some(Value::Num(a)) = meta.get("age_limit").filter(|v| truthy(Some(v))) {
+        rows.push(("Age limit", format!("{}+", py_str(&Value::Num(*a)))));
+    }
     rows.extend([
         // yt-dlp's license is what the site states: on YouTube, a Creative
         // Commons license's row on the watch page, and nothing otherwise.
         ("License", pick("license").unwrap_or_else(|| "not stated".into())),
         ("Video", video.filter(|v| !v.is_empty()).unwrap_or("none downloaded").to_string()),
     ]);
+    if let Some(f) = format_line(meta) {
+        rows.push(("Format", f));
+    }
+    if let Some(t) = pick("thumbnail") {
+        rows.push(("Thumbnail", t));
+    }
     if let Some(lang) = lang {
         // yt-dlp takes the uploader's captions over automatic ones in the same
         // language, so a language among 'subtitles' is the uploader's.
         let theirs = matches!(meta.get("subtitles"), Some(Value::Obj(m)) if m.iter().any(|(k, _)| k == lang));
         let source = if theirs { "written by the uploader" } else { "automatic: YouTube's speech recognition, not verbatim" };
         rows.push(("Captions", format!("{lang}, {source}")));
+        // Every language the uploader wrote captions in, the one taken or not:
+        // a translation they paid for says who the video was for.
+        if let Some(Value::Obj(m)) = meta.get("subtitles") {
+            let langs: Vec<&str> = m.iter().map(|(k, _)| k.as_str()).filter(|k| *k != "live_chat").collect();
+            if langs.len() > 1 || (langs.len() == 1 && langs[0] != lang) {
+                rows.push(("Subtitles", format!("{}, by the uploader", langs.join(", "))));
+            }
+        }
     }
     let mut out = format!("{title}\n\nNotes\n");
     for (k, v) in rows {
@@ -1413,6 +1751,8 @@ pub fn notes_at(meta: &Value, url: &str, lang: Option<&str>, video: Option<&str>
         ("Downvotes", "dislike_count"),
         ("Reposts", "repost_count"),
         ("Replies", "comment_count"),
+        // The channel's, not the video's, but a count all the same.
+        ("Followers", "channel_follower_count"),
     ]
     .iter()
     .filter_map(|(label, key)| match meta.get(key) {
@@ -1420,6 +1760,13 @@ pub fn notes_at(meta: &Value, url: &str, lang: Option<&str>, video: Option<&str>
         _ => None,
     })
     .collect();
+    let mut counts = counts;
+    // Where the audience went back to: the site's replay graph, read at the
+    // same moment as the counts and just as much a fact about it.
+    let peaks = most_replayed(meta.get("heatmap").and_then(|v| v.as_array()).unwrap_or(&[]), meta.get("duration").and_then(|v| v.as_num()).unwrap_or(0.0));
+    if !peaks.is_empty() {
+        counts.push(("Replayed", format!("{}  (most first)", peaks.iter().map(|t| fmt_secs(*t)).collect::<Vec<_>>().join(", "))));
+    }
     if !counts.is_empty() {
         out.push_str(&format!("Stats  (read {})\n", when(now)));
         for (k, v) in counts {
@@ -1427,15 +1774,76 @@ pub fn notes_at(meta: &Value, url: &str, lang: Option<&str>, video: Option<&str>
         }
         out.push('\n');
     }
-    let desc = meta.get("description").map(py_str).unwrap_or_default();
-    let desc = py_strip(if truthy(meta.get("description")) { &desc } else { "" });
-    if !desc.is_empty() {
-        out.push_str(&format!("Description\n{desc}\n\n"));
+    // What the uploader filed it under: words chosen to be found by, which
+    // is what they are for here too.
+    let tags: Vec<String> = meta.get("tags").and_then(|v| v.as_array()).map(|a| a.iter().map(py_str).filter(|t| !t.is_empty()).collect()).unwrap_or_default();
+    if !tags.is_empty() {
+        out.push_str("Tags\n");
+        for line in textwrap::wrap(&tags.join(", "), 74) {
+            out.push_str(&format!("  {line}\n"));
+        }
+        out.push('\n');
     }
-    if lang.is_some() {
-        out.push_str("Transcript\n");
+    let chapters: Vec<(f64, String)> = meta
+        .get("chapters")
+        .and_then(|v| v.as_array())
+        .map(|a| a.iter().filter_map(|c| Some((c.get("start_time")?.as_num()?, c.get("title").map(py_str)?))).collect())
+        .unwrap_or_default();
+    if !chapters.is_empty() {
+        out.push_str("Chapters\n");
+        let times: Vec<String> = chapters.iter().map(|(t, _)| fmt_secs(*t)).collect();
+        let w = times.iter().map(|t| t.len()).max().unwrap_or(0);
+        for (t, (_, title)) in times.iter().zip(&chapters) {
+            out.push_str(&format!("  {t:>w$}  {title}\n"));
+        }
+        out.push('\n');
     }
     out
+}
+
+/// The most replayed moments, most first: the three highest peaks of the
+/// site's replay graph, each at least a twentieth of the video from the one
+/// before. The opening is left out -- everybody watches the start.
+pub fn most_replayed(heatmap: &[Value], duration: f64) -> Vec<f64> {
+    let pts: Vec<(f64, f64, f64)> = heatmap
+        .iter()
+        .filter_map(|p| Some((p.get("start_time")?.as_num()?, p.get("end_time")?.as_num()?, p.get("value")?.as_num()?)))
+        .collect();
+    let mut peaks: Vec<(f64, f64)> = (0..pts.len())
+        .filter(|&i| pts[i].0 > 0.0)
+        .filter(|&i| (i == 0 || pts[i - 1].2 <= pts[i].2) && (i + 1 == pts.len() || pts[i + 1].2 < pts[i].2))
+        .map(|i| ((pts[i].0 + pts[i].1) / 2.0, pts[i].2))
+        .collect();
+    peaks.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
+    let gap = duration / 20.0;
+    let mut out: Vec<f64> = Vec::new();
+    for (t, _) in peaks {
+        if out.len() == 3 {
+            break;
+        }
+        if out.iter().all(|o| (o - t).abs() >= gap) {
+            out.push(t);
+        }
+    }
+    out
+}
+
+/// What was downloaded, in a line: `3840x2160, avc1 + mp4a, 25 fps`. Only
+/// from the download's own run; see FORMAT_FIELDS.
+fn format_line(meta: &Value) -> Option<String> {
+    let pick = |k: &str| meta.get(k).filter(|v| truthy(Some(v))).map(py_str).filter(|s| s != "none");
+    let mut bits = Vec::new();
+    if let Some(r) = pick("resolution").filter(|r| r != "audio only") {
+        bits.push(r);
+    }
+    let codecs: Vec<String> = ["vcodec", "acodec"].iter().filter_map(|k| pick(k)).map(|c| c.split('.').next().unwrap_or("").to_string()).collect();
+    if !codecs.is_empty() {
+        bits.push(codecs.join(" + "));
+    }
+    if let Some(Value::Num(f)) = meta.get("fps").filter(|v| truthy(Some(v))) {
+        bits.push(format!("{} fps", py_str(&Value::Num(*f))));
+    }
+    Some(bits.join(", ")).filter(|b| !b.is_empty())
 }
 
 #[cfg(test)]
@@ -1623,5 +2031,77 @@ mod tests {
         // And a download whose site gave nothing at all has no block at all.
         let bare = json::parse(r#"{"title": "v", "uploader": "u"}"#).unwrap();
         assert!(!notes_at(&bare, "u", None, None, 1758142323.0).contains("Stats"), "no counts, no block");
+    }
+
+    #[test]
+    fn the_notes_carry_every_field_the_site_gave_and_nothing_it_did_not() {
+        let meta = json::parse(r#"{"title": "Me at the zoo", "uploader": "jawed", "uploader_id": "@jawed", "extractor_key": "Youtube",
+            "channel_url": "https://www.youtube.com/channel/UC4QobU6STFB0P71PMvOGN5A", "language": "en", "categories": ["Film & Animation"],
+            "location": "SAN DIEGO ZOO", "live_status": "not_live", "availability": "public", "age_limit": 0, "media_type": "video",
+            "resolution": "320x240", "vcodec": "avc1.42001E", "acodec": "mp4a.40.2", "fps": 15, "thumbnail": "https://i.ytimg.com/t.jpg",
+            "channel_follower_count": 5140000, "duration": 19, "tags": ["me at the zoo", "jawed karim"],
+            "chapters": [{"start_time": 0, "title": "Intro", "end_time": 5}, {"start_time": 5, "title": "The cool thing", "end_time": 19}],
+            "subtitles": {"en": [], "de": []}}"#).unwrap();
+        let n = notes_at(&meta, "u", Some("en"), Some("v.mp4"), 1114313512.0);
+        for row in ["  Handle:     @jawed\n", "  Channel:    https://www.youtube.com/channel/UC4QobU6STFB0P71PMvOGN5A\n", "  Language:   en\n",
+            "  Category:   Film & Animation\n", "  Location:   SAN DIEGO ZOO\n", "  Format:     320x240, avc1 + mp4a, 15 fps\n",
+            "  Thumbnail:  https://i.ytimg.com/t.jpg\n", "  Subtitles:  en, de, by the uploader\n", "  Followers:  5,140,000\n",
+            "Tags\n  me at the zoo, jawed karim\n\n", "Chapters\n  0:00  Intro\n  0:05  The cool thing\n\n"] {
+            assert!(n.contains(row), "{row:?} in\n{n}");
+        }
+        // The ordinary case says nothing: public, not live, no age check, a plain video.
+        for absent in ["Live:", "Visibility:", "Age limit:", "Kind:", "Replayed:"] {
+            assert!(!n.contains(absent), "{absent} in\n{n}");
+        }
+        let odd = json::parse(r#"{"title": "t", "live_status": "was_live", "availability": "unlisted", "age_limit": 18}"#).unwrap();
+        let n = notes_at(&odd, "u", None, None, 0.0);
+        assert!(n.contains("  Live:       recorded from a live stream\n  Visibility: unlisted\n  Age limit:  18+\n"), "{n}");
+    }
+
+    #[test]
+    fn the_most_replayed_moments_are_peaks_not_neighbours() {
+        let pt = |s: f64, v: f64| Value::obj(vec![("start_time", Value::Num(s)), ("end_time", Value::Num(s + 10.0)), ("value", Value::Num(v))]);
+        // The opening is highest and is left out; 40-50 and 50-60 are one hill,
+        // and 30-40 is its slope, not a peak.
+        let map = vec![pt(0.0, 1.0), pt(10.0, 0.2), pt(20.0, 0.1), pt(30.0, 0.3), pt(40.0, 0.9), pt(50.0, 0.8), pt(60.0, 0.1), pt(70.0, 0.5), pt(80.0, 0.2), pt(90.0, 0.25)];
+        assert_eq!(most_replayed(&map, 100.0), vec![45.0, 75.0, 95.0]);
+        assert!(most_replayed(&[], 100.0).is_empty());
+    }
+
+    #[test]
+    fn the_video_tags_escape_what_ffmpeg_would_read_as_syntax() {
+        let meta = json::parse(r#"{"title": "a=b; c#d\\e", "uploader": "U", "upload_date": "20050424", "categories": ["Film"],
+            "tags": ["x", "y"], "description": "line one\nline two", "duration": 19,
+            "chapters": [{"start_time": 0, "title": "Intro", "end_time": 5}, {"start_time": 5.5, "title": "Rest"}]}"#).unwrap();
+        let f = ffmetadata(&meta, "u", Some(("en", "said\nthis")), "v.mp4", 0.0);
+        assert!(f.starts_with(";FFMETADATA1\ntitle=a\\=b\\; c\\#d\\\\e\nartist=U\ndate=20050424\ngenre=Film\n"), "{f}");
+        assert!(f.contains("description=line one\\\nline two\n") && f.contains("keywords=x, y\n") && f.contains("lyrics=said\\\nthis\n"), "{f}");
+        assert!(f.contains("comment=a\\=b\\; c\\#d\\\\e\\\n\\\nNotes\\\n"), "{f}");
+        assert!(f.contains("\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=5000\ntitle=Intro\n\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=5500\nEND=19000\ntitle=Rest\n"), "{f}");
+        // No transcript, no lyrics; no license, no copyright.
+        let f = ffmetadata(&meta, "u", None, "v.mp4", 0.0);
+        assert!(!f.contains("lyrics=") && !f.contains("copyright="), "{f}");
+    }
+
+    #[test]
+    fn the_format_is_the_downloads_and_the_counts_the_later_reads() {
+        let download = json::parse(r#"{"title": "T", "view_count": 1, "resolution": "1920x1080", "vcodec": "avc1"}"#).unwrap();
+        let later = json::parse(r#"{"title": "T", "view_count": 5, "tags": ["t"], "license": null}"#).unwrap();
+        let m = merged(&download, &later);
+        assert!(matches!(m.get("view_count"), Some(Value::Num(n)) if *n == 5.0));
+        assert_eq!(m.get("resolution").and_then(|v| v.as_str()), Some("1920x1080"));
+        assert!(m.get("tags").is_some() && m.get("license").is_none());
+    }
+
+    #[test]
+    fn a_capture_keeps_the_new_fields_too() {
+        let notes = json::parse(r#"{"webpage_url":"https://www.youtube.com/watch?v=x","title":"T","uploader":"U",
+            "channel_url":"https://www.youtube.com/channel/UCx","language":"en","tags":["a","b"],"categories":["Music"],
+            "chapters":[{"start_time":0,"title":"Intro","end_time":5}],"channel_follower_count":10}"#).unwrap();
+        let m = capture_meta(&notes, "u", "/tmp/a.mp4", 1758142323.0);
+        assert_eq!(m.get("channel_url").unwrap().as_str(), Some("https://www.youtube.com/channel/UCx"));
+        assert_eq!(m.get("tags").unwrap().as_array().unwrap().len(), 2);
+        assert_eq!(m.get("chapters").unwrap().to_json(), r#"[{"start": 0, "title": "Intro"}]"#);
+        assert!(matches!(m.get("stats").unwrap().get("followers"), Some(Value::Num(n)) if *n == 10.0));
     }
 }

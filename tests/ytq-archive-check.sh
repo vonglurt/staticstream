@@ -133,7 +133,8 @@ check "refused: the log says the MP4 stays" 'grep -q "not archived, so the MP4 s
 H=$(home mp4 OUTPUT=mp4)
 fetch "$H" ARCHIVEAAAA
 check "mp4: the MP4 and the transcript, no capture ($(files "$H/out"))" '[ "$(files "$H/out")" = "$N.mp4 $N.txt " ]'
-check "mp4: yt-dlp is asked nothing more than the Python ytq asks" '! grep -q "after_move:NOTES" "$H/.local/share/ytq/ytq.log"'
+# No capture, but the video is still tagged from the NOTES line, so it is asked for.
+check "mp4: yt-dlp is still asked for the notes the video's tags are made from" 'grep -q "after_move:NOTES" "$H/.local/share/ytq/ytq.log"'
 
 # real
 if [ "${YTQ_REAL:-1}" != 0 ] && timeout 60 yt-dlp --ignore-config --simulate --no-warnings --print id 'https://www.youtube.com/watch?v=jNQXAC9IVRw' > /dev/null 2>&1; then

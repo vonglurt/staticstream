@@ -45,11 +45,12 @@ ytq -- a yt-dlp download queue that watches the clipboard.
   ytq clear          forget finished, rejected and failed entries (h twice in
                      the window); the files and the log stay
 
-FILENAMES are the first word of the uploader's name, the title and the video
-id, in the URL-safe base64 alphabet (A-Z a-z 0-9 - _) and nothing else, then
-the extension: 'Café Tour: Part 2/3 [4K]' by Rick Astley is
-Rick-Cafe_Tour_Part_2_3_4K_dQw4w9WgXcQ.mp4. A YouTube video also gets
-Rick-Cafe_Tour_Part_2_3_4K_dQw4w9WgXcQ.txt beside it: Notes (full title,
+FILENAMES are up to the first three words of the uploader's name run
+together, the title and the video id, in the URL-safe base64 alphabet (A-Z
+a-z 0-9 - _) and nothing else, then the extension: 'Café Tour: Part 2/3
+[4K]' by Rick Astley is RickAstley-Cafe_Tour_Part_2_3_4K_dQw4w9WgXcQ.mp4,
+the title cut short when name and title pass 140. A YouTube video also gets
+RickAstley-Cafe_Tour_Part_2_3_4K_dQw4w9WgXcQ.txt beside it: Notes (full title,
 author, URL, published and downloaded times, any license the site states,
 the video's filename), the description, then the captions as plain text,
 fetched once the video is done. The .mp4 carries the same notes in its
