@@ -1,0 +1,139 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: MIT
+# Copyright (c) 2026 Paul Richeson
+#
+# A hostile stand-in yt-dlp, for tests/ytq-hostile-check.sh: it answers what
+# ytq asks as tests/standin/yt-dlp does, and every word a site would have
+# chosen carries an attack. Nothing reaches the network.
+#
+#   title         an escape sequence that names the window, one that clears
+#                 the screen, and two forged rows after a newline
+#   uploader      a forged URL row after a newline
+#   description   carriage returns with tags after them; three ways of asking
+#                 a shell to run something
+#   tags          a carriage return and a tag
+#   chapter       a carriage return, [CHAPTER], and a chapter's fields
+#   captions      an escape sequence, a NUL, a C1 control
+#   comment       an escape sequence that writes to the clipboard
+#   yt-dlp's own  a line of output with an escape sequence in it
+#
+# Each long field ends in a word of its own -- END-OF-DESCRIPTION,
+# END-OF-CAPTIONS -- so a field cut short is a field missing its last word.
+#
+# An id containing FAIL is a download that fails, and one containing SIGN is
+# one that wants a sign-in, each with an escape sequence in the error.
+# $HOSTILE_MP4 is a real MP4 to hand over as the download, so that
+# ffmpeg has something to tag; without it the download is a file of zeros.
+
+import json
+import os
+import re
+import shutil
+import sys
+
+args = sys.argv[1:]
+ESC = "\x1b"
+
+
+def after(flag):
+    return args[args.index(flag) + 1] if flag in args else ""
+
+
+def out(s):
+    sys.stdout.write(s + "\n")
+    sys.stdout.flush()
+
+
+def err(s):
+    sys.stderr.write(s + "\n")
+    sys.stderr.flush()
+
+
+def prints():
+    return [args[i + 1] for i, a in enumerate(args) if a == "--print"]
+
+
+if "--version" in args:
+    out("2026.08.19")
+    sys.exit(0)
+
+url = args[-1]
+m = re.search(r"v=([A-Za-z0-9_-]{11})", url)
+vid = m.group(1) if m else "UNKNOWNID00"
+tmpl = after("-o")
+
+TITLE = ("Honest" + ESC + "]0;PWNED-WINDOW-TITLE\x07" + ESC + "[2J title"
+         "\nLicense:    FORGED-IN-TITLE"
+         "\nlicense      FORGED-IN-TITLE")
+META = {
+    "webpage_url": "https://www.youtube.com/watch?v=" + vid,
+    "title": TITLE,
+    "uploader": "Up\nURL:        https://evil.example/FORGED-IN-UPLOADER",
+    "channel": "Chan",
+    "timestamp": 1114313512,
+    "upload_date": "20050424",
+    "license": None,
+    "duration": 19,
+    "description": ("An ordinary description.\rartist=FORGED-ARTIST\rtitle=FORGED-TITLE\n"
+                    + ESC + "[31mred" + ESC + "[0m $(touch PWNED1) `touch PWNED2` ; touch PWNED3 ;\n"
+                    "END-OF-DESCRIPTION"),
+    "tags": ["a", "b\rcomment=FORGED-COMMENT"],
+    "categories": ["Film"],
+    "chapters": [{"start_time": 0, "end_time": 5,
+                  "title": "one\r[CHAPTER]\rTIMEBASE=1/1000\rSTART=6000\rEND=7000\rtitle=FORGED-CHAPTER"}],
+    "subtitles": {},
+}
+
+
+def name(ext):
+    return (tmpl.replace("%(safe_head&{}_|)s", "Up-Honest_title_")
+            .replace("%(safe_id)s", vid).replace("%(ext)s", ext).replace("%%", "%"))
+
+
+if "--simulate" in args and "--skip-download" not in args:
+    out("%s\t1080\tmp4" % TITLE.split("\n")[0])
+    sys.exit(0)
+
+if "--write-comments" in args:
+    talk = [{"id": "c1", "parent": "root", "author": "@a" + ESC + "[5mblink", "timestamp": 1682300000, "like_count": 1,
+             "text": "a comment " + ESC + "]52;c;cHduZWQ=\x07 that writes to the clipboard"}]
+    for p in prints():
+        if p.startswith("COUNT"):
+            out("COUNT 1")
+        elif p.startswith("TALK"):
+            out("TALK " + json.dumps(talk))
+    sys.exit(0)
+
+if "--skip-download" in args:
+    stem = name("mp4")[:-len(".mp4")]
+    vtt = ("WEBVTT\nKind: captions\nLanguage: en\n\n"
+           "00:00:00.000 --> 00:00:02.000\nsaid " + ESC + "[8mhidden" + ESC + "[0m words\x00title=FORGED-BY-NUL\n\n"
+           "00:00:02.000 --> 00:00:04.000\nmore\u0085words END-OF-CAPTIONS\n")
+    with open(stem + ".en.vtt", "w", encoding="utf-8") as f:
+        f.write(vtt)
+    for p in prints():
+        if p.startswith("video:STEM"):
+            out("STEM " + name("webm"))
+        elif p.startswith("video:META"):
+            out("META " + json.dumps(META))
+    sys.exit(0)
+
+# A download.
+out("[youtube] Extracting URL: %s" % url)
+out("[youtube] %s: the site says " % vid + ESC + "]0;PWNED-BY-A-LINE\x07" + ESC + "[31mhello")
+if "SIGN" in vid:
+    err("ERROR: [youtube] %s: Sign in to confirm your age. " % vid + ESC + "]0;PWNED-BY-A-SIGN-IN\x07" + ESC + "[2Jplease")
+    sys.exit(1)
+if "FAIL" in vid:
+    err("ERROR: [youtube] %s: Video unavailable: " % vid + ESC + "]0;PWNED-BY-AN-ERROR\x07" + ESC + "[2Jgone")
+    sys.exit(1)
+final = name("mp4")
+src = os.environ.get("HOSTILE_MP4", "")
+if src and os.path.isfile(src):
+    shutil.copy(src, final)
+else:
+    with open(final, "wb") as f:
+        f.write(b"\0" * 6000)
+out("FILE " + final)
+if any(p.startswith("after_move:NOTES") for p in prints()):
+    out("NOTES " + json.dumps(META))

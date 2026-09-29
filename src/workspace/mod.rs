@@ -805,7 +805,7 @@ fn send(sv: &Service, t: &mut Transcript, keys: &Keys, screen: &mut Screen, runn
             // the way a shell shows what was typed above what it printed.
             // Without it the screen holds the last Service's output and this
             // one's with nothing to say where one ends and the other begins.
-            println!("{}", sv.line);
+            println!("{}", term::printable(&sv.line));
             let _ = std::io::stdout().flush();
             let st = sh(&sv.line).status();
             let said = outcome(&st);

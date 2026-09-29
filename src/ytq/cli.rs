@@ -16,6 +16,7 @@ use crate::ytq::live::{live_view, now};
 use crate::ytq::log::{log, say, Mode};
 use crate::ytq::queue::{self, status, text, title_or_url, RunLock};
 use crate::ytq::runner::{brave_ready, run_timeout, Ran, Runner, NAME};
+use crate::ytq::term::printable;
 use crate::ytq::urls::{as_url, first_id, py_strip, short, youtube_urls};
 use crate::ytq::{settings, Paths, HISTORY, ORDER, PENDING};
 
@@ -223,13 +224,13 @@ fn cmd_status(ctx: &Ctx) {
     });
     let t = now();
     for i in items.iter().filter(|i| status(i) == "downloading") {
-        println!("  downloading  {}   {}", title_or_url(i), text(i, "quality"));
+        println!("  downloading  {}   {}", printable(title_or_url(i)), printable(text(i, "quality")));
         for row in live_view(i, 110, t) {
-            println!("    {row}");
+            println!("    {}", printable(&row));
         }
     }
     for i in items.iter().filter(|i| status(i) == "cookies") {
-        println!("  sign-in    {}  -- then 'ytq cookies'", title_or_url(i));
+        println!("  sign-in    {}  -- then 'ytq cookies'", printable(title_or_url(i)));
     }
     let counts: Vec<String> = ORDER
         .iter()
@@ -243,10 +244,10 @@ fn cmd_status(ctx: &Ctx) {
 fn cmd_list(ctx: &Ctx) {
     let items = queue::snapshot(&ctx.paths);
     for it in &items {
-        println!("{:<13} {:<10} {}", status(it), text(it, "quality"), title_or_url(it));
+        println!("{:<13} {:<10} {}", printable(status(it)), printable(text(it, "quality")), printable(title_or_url(it)));
         let err = text(it, "error");
         if !err.is_empty() {
-            println!("              {}", err.chars().take(100).collect::<String>());
+            println!("              {}", printable(&err.chars().take(100).collect::<String>()));
         }
     }
     if items.is_empty() {
@@ -593,7 +594,7 @@ pub fn main(argv: &[String]) -> i32 {
                 match runner.transcript(&u, &tmpl, &["yt-dlp".to_string()], None) {
                     Ok(txt) => println!("{}", ctx.tilde(&txt)),
                     Err(why) => {
-                        println!("no transcript for {u} -- {why}");
+                        println!("no transcript for {} -- {}", printable(&u), printable(&why));
                         failed = true;
                     }
                 }

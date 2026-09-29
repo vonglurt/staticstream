@@ -18,6 +18,7 @@
 
 use std::path::{Path, PathBuf};
 
+pub mod clean;
 pub mod cli;
 pub mod live;
 pub mod log;

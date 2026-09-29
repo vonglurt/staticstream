@@ -226,7 +226,10 @@ pub fn as_url(text: &str) -> Option<String> {
             return Some(format!("https://www.youtube.com/watch?v={id}"));
         }
     }
-    if is_url(t) {
+    // URL_RE takes anything that is not whitespace after the host, and an
+    // escape character is not whitespace. A URL is printed, logged, queued
+    // and handed to a browser; one with a control character in it is not one.
+    if is_url(t) && !t.chars().any(|c| c.is_control()) {
         Some(t.to_string())
     } else {
         None

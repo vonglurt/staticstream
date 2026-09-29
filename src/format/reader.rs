@@ -649,18 +649,21 @@ impl<R: Read> Reader<R> {
         let s = &self.s;
         let empty = Value::Obj(Vec::new());
         let m = self.meta.as_ref().unwrap_or(&empty);
-        let text = |k: &str| m.get(k).map(display).unwrap_or_else(|| "?".into());
+        // Whoever made the capture wrote its header, so what it says is shown
+        // as `printable` leaves it: on one line, and with no escape sequence.
+        let shown = |v: &Value| crate::ytq::term::printable(&display(v));
+        let text = |k: &str| m.get(k).map(shown).unwrap_or_else(|| "?".into());
         let mut lines = vec![format!("stream       {}  {}  created {}", text("stream_id"), text("content_type"), text("created"))];
         for k in ["source", "license", "note"] {
             if let Some(v) = m.get(k).filter(|v| truthy(v)) {
-                lines.push(format!("{:<12} {}", k, display(v)));
+                lines.push(format!("{:<12} {}", k, shown(v)));
             }
         }
         match m.get("key").and_then(|v| v.as_str()).filter(|k| !k.is_empty()) {
             Some(key) => {
                 let fp = fingerprint(key).unwrap_or_default();
-                let shown = if fp.is_empty() { key.chars().take(40).collect() } else { fp };
-                lines.push(format!("key          {}; {}", shown, self.trust.as_deref().unwrap_or("no good signature seen")));
+                let named = if fp.is_empty() { crate::ytq::term::printable(&key.chars().take(40).collect::<String>()) } else { fp };
+                lines.push(format!("key          {}; {}", named, self.trust.as_deref().unwrap_or("no good signature seen")));
             }
             None => lines.push("key          none: checkpoints detect damage, not tampering".into()),
         }

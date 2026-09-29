@@ -24,10 +24,12 @@ use crate::format::json::{self, Value};
 use crate::format::sha256::{hex, Sha256};
 use crate::format::{reader, writer};
 
+use crate::ytq::clean::{clean_info, one_line};
 use crate::ytq::live::{compact, describe, fmt_secs, fmt_size, na, number, py_str, size_of, splitext, stage, stream_of, truthy, PROGRESS_KEYS};
 use crate::ytq::log::{log, say, splitlines, Mode};
 use crate::ytq::queue::{self, status, text, title_or_url, RunLock};
 use crate::ytq::settings::{DEFAULT_COMMENTS, DEFAULT_FORMAT, DEFAULT_SUBS};
+use crate::ytq::term::printable;
 use crate::ytq::urls::{first_id, py_strip, short};
 use crate::ytq::{sys, textwrap, Paths, DOWNLOADABLE, PENDING};
 
@@ -201,6 +203,10 @@ pub const NOTES_PRINT: &str = concat!("after_move:NOTES %(.{", info_fields!(), "
 
 /// The transcript run's copy of the same fields, with the captions on offer.
 const META_PRINT: &str = concat!("video:META %(.{", info_fields!(), ",subtitles})j");
+
+/// The fields of yt-dlp's info that may run to more than one line. Every
+/// other string is a name, a word or an address, and is kept to one.
+const LONG_FIELDS: &[&str] = &["description"];
 
 /// The fields that describe the file downloaded rather than the video. A run
 /// that downloads nothing still fills them, from the format it would have
@@ -401,7 +407,8 @@ impl Runner {
                     let first = splitlines(out).first().copied().unwrap_or("");
                     let mut f: Vec<&str> = first.split('\t').collect();
                     f.extend(["", ""]);
-                    let (title, height, ext) = (f[0], f[1], f[2]);
+                    let (title, height, ext) = (&one_line(f[0]), &one_line(f[1]), &one_line(f[2]));
+                    let (title, height, ext) = (title.as_str(), height.as_str(), ext.as_str());
                     let q = format!("{} {}", if matches!(height, "NA" | "" | "None") { "?".to_string() } else { format!("{height}p") }, ext);
                     self.update(url, vec![("status", Value::str("queued")), ("title", Value::str(first_chars(title, 200))), ("quality", Value::str(&q)), ("error", Value::str(""))]);
                     self.log(&format!("queued {title} [{q}] {url} (checked in {took:.1} s)"));
@@ -411,7 +418,7 @@ impl Runner {
                     for line in &lines[lines.len().saturating_sub(4)..] {
                         self.log(&format!("{tag}: check: {line}"));
                     }
-                    let e = first_chars(lines.last().copied().unwrap_or("no output"), 300);
+                    let e = first_chars(&one_line(lines.last().copied().unwrap_or("no output")), 300);
                     if cookie_problem(&e) {
                         // Not rejected: queue it anyway. The first real attempt is
                         // what opens Brave if the complaint holds.
@@ -549,7 +556,10 @@ impl Runner {
                 Err(mpsc::RecvTimeoutError::Timeout) => continue,
                 Err(mpsc::RecvTimeoutError::Disconnected) => break,
             };
-            let line = raw.trim_end_matches(|c: char| c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)).to_string();
+            // A line of yt-dlp's can quote the site: an error it was given, a
+            // name. JSON comes through as it was, its escapes being six
+            // printable characters each until it is parsed.
+            let line = one_line(raw.trim_end_matches(|c: char| c.is_whitespace() || ('\u{1c}'..='\u{1f}').contains(&c)));
             if line.is_empty() {
                 continue;
             }
@@ -580,7 +590,7 @@ impl Runner {
                 }
             } else if let Some(n) = line.strip_prefix("NOTES ") {
                 if let Ok(v) = json::parse(n) {
-                    notes = v;
+                    notes = clean_info(v, LONG_FIELDS);
                 }
             } else if let Some(f) = line.strip_prefix("FILE ") {
                 fname = f.to_string();
@@ -602,7 +612,7 @@ impl Runner {
                     changed = true;
                     self.log(&format!("{tag}: now {} (the step before took {took})", describe(&live)));
                     if self.mode() == Mode::Print {
-                        println!("  {}", describe(&live));
+                        println!("  {}", printable(&describe(&live)));
                     }
                 }
             }
@@ -945,7 +955,7 @@ impl Runner {
             if !self.paused.load(Ordering::SeqCst) && items.iter().any(|i| DOWNLOADABLE.contains(&status(i))) {
                 if let Some((it, cookies)) = self.claim() {
                     if interactive {
-                        println!("{}  {}", if cookies { "with Brave's cookies" } else { "fetching" }, title_or_url(&it));
+                        println!("{}  {}", if cookies { "with Brave's cookies" } else { "fetching" }, printable(title_or_url(&it)));
                     }
                     if let End::Interrupted = self.download(&it, cookies) {
                         return Err(());
@@ -959,7 +969,7 @@ impl Runner {
             }
             if interactive && items.iter().any(|i| status(i) == "cookies") {
                 for i in items.iter().filter(|i| status(i) == "cookies") {
-                    println!("needs a Brave sign-in: {}\n  {}", text(i, "url"), text(i, "error"));
+                    println!("needs a Brave sign-in: {}\n  {}", printable(text(i, "url")), printable(text(i, "error")));
                 }
                 println!("  Brave has been opened on it. Sign in or pass the check there, then press Enter here.");
                 let mut line = String::new();
@@ -1069,13 +1079,13 @@ impl Runner {
                 total = n.trim().parse::<f64>().ok();
             } else if let Some(t) = line.strip_prefix("TALK ") {
                 if let Ok(Value::Arr(v)) = json::parse(t) {
-                    list = v;
+                    list = v.into_iter().map(|c| clean_info(c, &["text"])).collect();
                 }
             }
         }
         if list.is_empty() && code != 0 {
             let last = errs.last().map(|s| s.to_string()).unwrap_or_else(|| format!("yt-dlp exited {code}"));
-            return Err(first_chars(&last, 300));
+            return Err(first_chars(&one_line(&last), 300));
         }
         Ok((list, total))
     }
@@ -1197,7 +1207,7 @@ impl Runner {
                 stem = splitext(f).0.to_string();
             } else if let Some(m) = line.strip_prefix("META ") {
                 if let Ok(v) = json::parse(m) {
-                    meta = v;
+                    meta = clean_info(v, LONG_FIELDS);
                 }
             }
         }
@@ -1216,7 +1226,7 @@ impl Runner {
         ));
         let captions = if vtts.is_empty() {
             let last = errs.last().map(|s| s.to_string()).unwrap_or_else(|| format!("no captions matching {subs}"));
-            Err(first_chars(&last, 300))
+            Err(first_chars(&one_line(&last), 300))
         } else {
             let lang = vtts[0][stem.len() + 1..vtts[0].len() - ".vtt".len()].to_string();
             match textwrap::vtt_text(Path::new(&vtts[0])) {
@@ -1322,11 +1332,21 @@ fn merged(download: &Value, later: &Value) -> Value {
     out
 }
 
-/// A value for an FFMETADATA file: `=`, `;`, `#`, `\` and newlines escaped.
+/// A value for an FFMETADATA file: `=`, `;`, `#`, `\`, newlines and carriage
+/// returns escaped, and NUL left out.
+///
+/// ffmpeg ends a line at a carriage return as it does at a newline, so one
+/// that is not escaped ends the value and starts a line of the file with
+/// whatever followed it -- `[CHAPTER]`, say. It ends one at a NUL too, and
+/// there is no escaping that: the value is a C string by the time the
+/// backslash is taken off, so it would end there all the same.
 fn ffescape(s: &str) -> String {
     let mut out = String::with_capacity(s.len());
     for c in s.chars() {
-        if matches!(c, '=' | ';' | '#' | '\\' | '\n') {
+        if c == '\0' {
+            continue;
+        }
+        if matches!(c, '=' | ';' | '#' | '\\' | '\n' | '\r') {
             out.push('\\');
         }
         out.push(c);
@@ -2078,6 +2098,14 @@ mod tests {
         assert!(f.contains("description=line one\\\nline two\n") && f.contains("keywords=x, y\n") && f.contains("lyrics=said\\\nthis\n"), "{f}");
         assert!(f.contains("comment=a\\=b\\; c\\#d\\\\e\\\n\\\nNotes\\\n"), "{f}");
         assert!(f.contains("\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=0\nEND=5000\ntitle=Intro\n\n[CHAPTER]\nTIMEBASE=1/1000\nSTART=5500\nEND=19000\ntitle=Rest\n"), "{f}");
+        // A carriage return ends a line for ffmpeg, and a NUL does: neither
+        // may reach the file as itself.
+        assert_eq!(ffescape("a\rb\0c\r\nd"), "a\\\rbc\\\r\\\nd");
+        let hostile = json::parse(r#"{"title":"t","chapters":[{"start_time":0,"end_time":5,"title":"one\r[CHAPTER]\rSTART=6000"}]}"#).unwrap();
+        let f = ffmetadata(&hostile, "u", Some(("en", "said\0 more\rlyrics=x")), "v.mp4", 0.0);
+        // One chapter was given, so one line of the file opens one.
+        assert_eq!(f.split('\n').filter(|l| *l == "[CHAPTER]").count(), 1, "{f}");
+        assert!(!f.contains('\0') && !f.replace("\\\r", "").contains('\r'), "{f}");
         // No transcript, no lyrics; no license, no copyright.
         let f = ffmetadata(&meta, "u", None, "v.mp4", 0.0);
         assert!(!f.contains("lyrics=") && !f.contains("copyright="), "{f}");

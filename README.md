@@ -30,10 +30,10 @@ line of it here, and retired that one.
 
 ## Status: phases 0–3 done, phase 4 all but two runs
 
-`make check` is **399 checks** and **141 unit tests**, and passes with nothing
+`make check` is **431 checks** and **149 unit tests**, and passes with nothing
 installed but `cargo`: 44 comparisons against the Python prototype, 26 of
-version 1's outer code, 32 + 50 + 34 + 133 across ytq, and 80 of the
-Workspace. Clone it and run `make check` — it needs no second checkout, no
+version 1's outer code, 32 + 51 + 34 + 133 across ytq, 80 of the Workspace,
+and 31 of ytq against a yt-dlp whose every word means harm. Clone it and run `make check` — it needs no second checkout, no
 network and no crates.
 
 The format is defined, built and measured by the Python prototype,

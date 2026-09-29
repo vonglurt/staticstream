@@ -11,6 +11,7 @@
 //! em-dash -- and chunks laid greedily into lines, a word longer than a line
 //! broken at a hyphen where it can be.
 
+use crate::ytq::clean::clean;
 use crate::ytq::urls::{html_unescape, py_strip};
 
 /// textwrap's whitespace: ASCII only, as `_whitespace = '\t\n\x0b\x0c\r '`.
@@ -225,7 +226,10 @@ pub fn vtt_words(raw: &str) -> String {
         if header {
             header = !line.is_empty();
         } else if !line.contains("-->") {
-            let t = html_unescape(&strip_tags(line));
+            // After the entities are undone, not before: `&#27;` is an escape
+            // character that was five printable ones until then. `clean` and
+            // not `one_line`: a tab is for `fill` to expand, as Python's does.
+            let t = clean(&html_unescape(&strip_tags(line)));
             let t = py_strip(&t);
             if !t.is_empty() && lines.last().map_or(true, |l| l != t) {
                 lines.push(t.to_string());

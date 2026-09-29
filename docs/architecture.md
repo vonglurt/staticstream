@@ -279,6 +279,31 @@ and both of which cost a day to find:
    break on the next yt-dlp release; one that keeps the last six lines as
    context for a failure message does not.
 
+### What we read is cleaned where it comes in
+
+**Every word of `NOTES`, `META` and the comments was chosen by a stranger**,
+and so was any line of yt-dlp's that quotes the site. They go on to the
+`.txt`, the video's tags, the capture's header, the queue, the log, a
+notification and the terminal, and each of those gives some character a
+meaning. So the text is cleaned once, at the door (`src/ytq/clean.rs`), and
+escaped again at each exit:
+
+| Where | What is done | By |
+|---|---|---|
+| `NOTES`, `META`, the comments, as parsed | control characters out; every string one line, but the description and a comment's text | `clean_info` |
+| every line yt-dlp writes; the check's title | one line, no control characters | `one_line` |
+| a caption file's words | control characters out, after the entities are undone | `clean` |
+| a URL | refused if it holds a control character | `as_url` |
+| the FFMETADATA file | `= ; # \`, newline and carriage return escaped; NUL left out | `ffescape` |
+| the log, a notification, what `ytq` and `sstr verify` print | `^[` for an escape, line by line | `term::printable` |
+| a Service's shell line | one quoted word | `services::quote` |
+
+**This is a deliberate difference from the Python ytq**, which writes what it
+is given. It shows only where a site sends a control character or puts a
+newline in a name, and the crosschecks — whose fixtures do neither — agree as
+they did. The reasoning, and the run that found the four defects this
+closes, are in copal's `docs/text-safety-lab-report.md`.
+
 ### Where it is allowed to change under us
 
 Everything in that table is a *format string we send*, so a yt-dlp change
@@ -627,11 +652,12 @@ nothing else while the share is up.
 | `crosscheck` | `sstr` against the frozen Python prototype, at version 0 | 44 |
 | `outer-check` | version 1's P+Q: two lost records rebuilt where version 0 loses both | 26 |
 | `ytq-crosscheck` | urls, settings, queue, clipboard against the Python ytq | 32 |
-| `ytq-runner-crosscheck` | downloads, stops, cookies, retries, transcripts | 50 |
+| `ytq-runner-crosscheck` | downloads, stops, cookies, retries, transcripts | 51 |
 | `ytq-archive-check` | `OUTPUT`, `ARCHIVE_DIR`, `SSTR_KEY` | 34 |
 | `ytq-window-crosscheck` | the window beside the Python one, in tmux | 133 |
-| `workspace-check` | the Browser's columns against `ls`, the keys, the frame | 70 |
-| | **total** | **389** |
+| `workspace-check` | the Browser's columns against `ls`, the keys, the frame | 80 |
+| `ytq-hostile-check` | ytq against a yt-dlp whose every field carries an attack: nothing run, no control character kept or printed, no forged row, the tags whole | 31 |
+| | **total** | **431** |
 
 **Two specifications, both frozen, both Python**: `tests/reference/copal-sstr.py`
 for the format at version 0, and `tests/reference/ytq.py` for the queue, the

@@ -10,6 +10,7 @@ use std::fs::OpenOptions;
 use std::io::{IsTerminal, Write};
 use std::process::{Command, Stdio};
 
+use crate::ytq::term::printable;
 use crate::ytq::{sys, Paths};
 
 pub const LOG_MAX: u64 = 4 * 1024 * 1024;
@@ -40,6 +41,10 @@ pub fn splitlines(s: &str) -> Vec<&str> {
 }
 
 /// `log(msg)`: a line per line of msg, each stamped with the time and the pid.
+///
+/// A line goes in as `printable` leaves it: the log is read with `cat` and
+/// `tail`, and an escape sequence yt-dlp passed on from a site would reach
+/// the terminal from there as surely as from a `println!`.
 pub fn log(paths: &Paths, msg: &str) {
     let Some(dir) = paths.log.parent() else { return };
     let _ = std::fs::create_dir_all(dir);
@@ -53,7 +58,7 @@ pub fn log(paths: &Paths, msg: &str) {
     if lines.is_empty() {
         lines.push("");
     }
-    let text: String = lines.iter().map(|l| format!("{stamp}{l}\n")).collect();
+    let text: String = lines.iter().map(|l| format!("{stamp}{}\n", printable(l))).collect();
     if let Ok(mut f) = OpenOptions::new().create(true).append(true).open(&paths.log) {
         let _ = f.write_all(text.as_bytes());
     }
@@ -82,6 +87,8 @@ impl Mode {
 /// `say(msg, urgent)`.
 pub fn say(paths: &Paths, mode: Mode, msg: &str, urgent: bool) {
     log(paths, msg);
+    // Line by line: a message may be several, and its newlines are its own.
+    let msg = &msg.split('\n').map(printable).collect::<Vec<_>>().join("\n");
     match mode {
         Mode::Print => println!("{msg}"),
         Mode::Notify => {
