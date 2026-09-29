@@ -20,6 +20,11 @@
 # Each long field ends in a word of its own -- END-OF-DESCRIPTION,
 # END-OF-CAPTIONS -- so a field cut short is a field missing its last word.
 #
+# An id containing AWAY is a download whose last FILE line names
+# $HOSTILE_AWAY, a file outside the folder; one containing NEAR names
+# $HOSTILE_NEAR, another video's file inside it. Either is what a line of the
+# site's would look like, had it reached yt-dlp's output at the right moment.
+#
 # An id containing FAIL is a download that fails, and one containing SIGN is
 # one that wants a sign-in, each with an escape sequence in the error.
 # $HOSTILE_MP4 is a real MP4 to hand over as the download, so that
@@ -135,5 +140,8 @@ else:
     with open(final, "wb") as f:
         f.write(b"\0" * 6000)
 out("FILE " + final)
+for word in ("AWAY", "NEAR"):
+    if word in vid:
+        out("FILE " + os.environ["HOSTILE_" + word])
 if any(p.startswith("after_move:NOTES") for p in prints()):
     out("NOTES " + json.dumps(META))

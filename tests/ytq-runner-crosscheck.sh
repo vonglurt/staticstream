@@ -97,7 +97,7 @@ collect() { # <scenario> <side> <home>
         -e 's/took [0-9:]+\)/took T)/g' -e 's/, [0-9:]+ in([,;])/, T in\1/' \
         -e 's/%\(\.\{[^}]*\}\)j/%(.{FIELDS})j/g' \
         -e "s/ --print 'after_move:NOTES %\(\.\{FIELDS\}\)j'//" -e 's/ --write-thumbnail --convert-thumbnails jpg//' \
-        -e '/: tagged /d' -e '/: not tagged, /d' \
+        -e '/: tagged /d' -e '/: not tagged, /d' -e "s/ -- ('?https?:[^ ]*)$/ \\1/" \
         -e '/: fetching the discussion,/d' -e '/--write-comments/d' \
         -e '/: discussion run exited/d' -e '/: discussion:/d' "$h/.local/share/ytq/ytq.log" > "$W/$s.log.$side" 2>/dev/null
     python3 -c '

@@ -16,6 +16,9 @@
 #             or in 'sstr verify'
 #   tags      the MP4 has one chapter, its lyrics and its description whole,
 #             and one-line tags of one line -- when ffmpeg is there
+#   path      a FILE line that names somebody else's file is refused: the
+#             file is not tagged, not captured and not removed
+#   operand   every yt-dlp command has -- before its URL
 #
 # A control character here is what Unicode calls one: U+0000 to U+001F,
 # U+007F, and U+0080 to U+009F.
@@ -98,7 +101,8 @@ ytq() {
     h=$1; shift
     # shellcheck disable=SC2086  # $YTQ is 'sstr ytq' by default: two words
     (cd "$h" && env -u XDG_CONFIG_HOME -u XDG_DATA_HOME -u DISPLAY -u WAYLAND_DISPLAY -u HYPRLAND_INSTANCE_SIGNATURE \
-        HOME="$h" PATH="$STUB:$PATH" HOSTILE_MP4="$W/real.mp4" $YTQ "$@")
+        HOME="$h" PATH="$STUB:$PATH" HOSTILE_MP4="$W/real.mp4" \
+        HOSTILE_AWAY="$W/away/precious.mp4" HOSTILE_NEAR="$h/out/Other-Video_OTHERVIDEO1.mp4" $YTQ "$@")
 }
 # home <name> <config lines...>
 home() {
@@ -197,6 +201,31 @@ check "rows: and no license row, the site having stated none ($(count "^[Ll]icen
     '[ "$(count "^[Ll]icense" "$W/verify.out")" = 0 ]'
 check "rows: and no forged URL ($(count "^URL:" "$W/verify.out"))" '[ "$(count "^URL:" "$W/verify.out")" = 0 ]'
 check "command: nothing was run by the second download either" '[ -z "$(find "$W" -name "PWNED*")" ]'
+
+# path: OUTPUT=sstr, which removes the file it was told it downloaded.
+H=$(home path SSTR_KEY=)
+mkdir -p "$W/away"
+for f in "$W/away/precious.mp4" "$H/out/Other-Video_OTHERVIDEO1.mp4"; do
+    if [ "$TAGS" = 1 ]; then cp "$W/real.mp4" "$f"; else printf 'not a video, but somebody wants it\n' > "$f"; fi
+    cp "$f" "$f.kept"
+done
+mv "$H/out/Other-Video_OTHERVIDEO1.mp4.kept" "$W/away/other.kept"
+fetch "$H" HOSTILEAWAY
+fetch "$H" HOSTILENEAR
+LOG="$H/.local/share/ytq/ytq.log"
+check "path: a file outside the folder is as it was" 'cmp -s "$W/away/precious.mp4" "$W/away/precious.mp4.kept"'
+check "path: another video in the folder is as it was" 'cmp -s "$H/out/Other-Video_OTHERVIDEO1.mp4" "$W/away/other.kept"'
+check "path: neither was captured ($(files "$H/out"))" \
+    '[ "$(files "$H/out")" = "Other-Video_OTHERVIDEO1.mp4 Up-Honest_title_HOSTILEAWAY.sstr Up-Honest_title_HOSTILEAWAY.txt Up-Honest_title_HOSTILENEAR.sstr Up-Honest_title_HOSTILENEAR.txt " ] && [ "$(files "$W/away")" = "other.kept precious.mp4 precious.mp4.kept " ]'
+check "path: the log says each was refused, and why ($(count "is not this download.s, and it is left alone" "$LOG"))" \
+    'grep -q "left alone: $W/away/precious.mp4 -- it is not in " "$LOG" && grep -q "left alone: $H/out/Other-Video_OTHERVIDEO1.mp4 -- its name does not end in HOSTILENEAR" "$LOG"'
+
+# operand: a command is logged as 'run: ...', and ends in its URL -- on a
+# later line of the log when an argument of its own holds a newline.
+cat "$W"/*/.local/share/ytq/ytq.log > "$W/all.log"
+runs=$(grep -c "run: " "$W/all.log")
+ends=$(grep -c " -- 'https://www.youtube.com/watch?v=HOSTILE[A-Z]*'\$" "$W/all.log")
+check "operand: every yt-dlp command in the logs has -- before its URL ($ends of $runs)" '[ "$runs" -gt 0 ] && [ "$ends" = "$runs" ]'
 
 if [ "$FAILED" -eq 0 ]; then
     printf '  ok      ytq-hostile-check: %d checks pass\n' "$PASSED"

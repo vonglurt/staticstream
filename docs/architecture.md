@@ -294,9 +294,23 @@ escaped again at each exit:
 | every line yt-dlp writes; the check's title | one line, no control characters | `one_line` |
 | a caption file's words | control characters out, after the entities are undone | `clean` |
 | a URL | refused if it holds a control character | `as_url` |
+| a `FILE` or `STEM` line | believed only if the path is in `DIR` itself, in ytq's alphabet, and — for a YouTube video — ends in the id the URL gave | `own_path` |
+| every yt-dlp command | `--` before the URL | `runner.rs` |
 | the FFMETADATA file | `= ; # \`, newline and carriage return escaped; NUL left out | `ffescape` |
 | the log, a notification, what `ytq` and `sstr verify` print | `^[` for an escape, line by line | `term::printable` |
 | a Service's shell line | one quoted word | `services::quote` |
+
+**A tagged line is checked, not believed.** The tags share yt-dlp's output
+with everything it prints, and some of that quotes the site. What `NOTES`
+and `META` carry is the site's own words in any case, and is cleaned. What
+`FILE` carries is a path that ytq goes on to rewrite, record and — with
+`OUTPUT=sstr` — remove, so a line that names somebody else's file is logged
+and left alone. Giving yt-dlp's errors a pipe of their own was considered
+and not done: the log would lose the order its lines were written in, and
+yt-dlp quotes the site on its standard output too.
+
+**A shell is started in two places, both the Workspace's**, where a Service
+is a line a person can read and retype. `make shell-check` fails on a third.
 
 **This is a deliberate difference from the Python ytq**, which writes what it
 is given. It shows only where a site sends a control character or puts a
@@ -656,8 +670,9 @@ nothing else while the share is up.
 | `ytq-archive-check` | `OUTPUT`, `ARCHIVE_DIR`, `SSTR_KEY` | 34 |
 | `ytq-window-crosscheck` | the window beside the Python one, in tmux | 133 |
 | `workspace-check` | the Browser's columns against `ls`, the keys, the frame | 80 |
-| `ytq-hostile-check` | ytq against a yt-dlp whose every field carries an attack: nothing run, no control character kept or printed, no forged row, the tags whole | 31 |
-| | **total** | **431** |
+| `ytq-hostile-check` | ytq against a yt-dlp whose every field carries an attack: nothing run, no control character kept or printed, no forged row, the tags whole, no file touched that is not the download's | 36 |
+| | **total** | **436** |
+| `shell-check` | a shell is started by the Workspace's Services and nowhere else | — |
 
 **Two specifications, both frozen, both Python**: `tests/reference/copal-sstr.py`
 for the format at version 0, and `tests/reference/ytq.py` for the queue, the

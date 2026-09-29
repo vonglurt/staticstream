@@ -70,6 +70,7 @@ check: deps ## what a commit must pass: no external crates, the tests, an offlin
 	@YTQ='$(YTQ_BIN)' sh tests/ytq-window-crosscheck.sh
 	@WS='$(CURDIR)/target/release/sstr-workspace' sh tests/workspace-check.sh
 	@YTQ='$(YTQ_BIN)' sh tests/ytq-hostile-check.sh
+	@sh tests/shell-check.sh
 	@printf '  ok      check passed\n'
 
 crosscheck: ## the Rust sstr against the frozen prototype: both directions, damage, armor
@@ -95,6 +96,12 @@ ytq-runner-crosscheck: ## the Rust runner against the Python ytq's: downloads, s
 ytq-archive-check: ## the Rust ytq archiving downloads into Static Stream: OUTPUT, ARCHIVE_DIR, SSTR_KEY
 	@$(CARGO) build --release --offline --locked --quiet
 	@VERBOSE=1 sh tests/ytq-archive-check.sh
+
+## shell-check: a shell is started by the Workspace's Services and by
+## nothing else; a new `Command::new("sh")` fails until it is listed by hand
+.PHONY: shell-check
+shell-check:
+	@sh tests/shell-check.sh
 
 # The tags need ffmpeg and ffprobe; without them that section is skipped.
 .PHONY: ytq-hostile-check

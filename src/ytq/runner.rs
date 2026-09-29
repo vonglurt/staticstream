@@ -387,7 +387,7 @@ impl Runner {
         let t0 = sys::now();
         let format = self.s.get("FORMAT").cloned().unwrap_or_else(|| DEFAULT_FORMAT.into());
         let ran = run_timeout(
-            Command::new("yt-dlp").args(["--simulate", "--no-playlist", "--no-warnings", "-f", &format, "--print", "%(title)s\t%(height)s\t%(ext)s", url]),
+            Command::new("yt-dlp").args(["--simulate", "--no-playlist", "--no-warnings", "-f", &format, "--print", "%(title)s\t%(height)s\t%(ext)s", "--", url]),
             180,
         );
         match ran {
@@ -491,6 +491,10 @@ impl Runner {
         cmd.push(NOTES_PRINT.into());
         cmd.push("-o".into());
         cmd.push(out_tmpl.clone());
+        // What follows is a URL, whatever it starts with: as_url() sees to it
+        // that it starts with http, and this sees to it that it would not
+        // matter if it did not.
+        cmd.push("--".into());
         cmd.push(url.clone());
         self.log(&format!("{tag}: attempt {} at {title}{}, into {dir}", py_str(&Value::Num(attempts)), if with_cookies { " with Brave's cookies" } else { "" }));
         self.log(&format!("run: {}", cmd.iter().map(|c| shlex_quote(c)).collect::<Vec<_>>().join(" ")));
@@ -593,8 +597,13 @@ impl Runner {
                     notes = clean_info(v, LONG_FIELDS);
                 }
             } else if let Some(f) = line.strip_prefix("FILE ") {
-                fname = f.to_string();
-                self.log(&format!("{tag}: file {fname}"));
+                match own_path(f, &dir, &url) {
+                    Ok(()) => {
+                        fname = f.to_string();
+                        self.log(&format!("{tag}: file {fname}"));
+                    }
+                    Err(why) => self.log(&format!("{tag}: yt-dlp named a file that is not this download's, and it is left alone: {f} -- {why}")),
+                }
             } else if line.starts_with("[MetadataParser] ") {
                 // A line per step of the filename rule, twice over with
                 // /etc/yt-dlp.conf present; the name they make is logged as 'file'.
@@ -1054,7 +1063,7 @@ impl Runner {
             "--extractor-args", &ea,
             "--print", "COUNT %(comment_count)s",
             "--print", "TALK %(comments)j",
-            url,
+            "--", url,
         ] {
             full.push(a.to_string());
         }
@@ -1175,7 +1184,7 @@ impl Runner {
                 full.push(a.to_string());
             }
         }
-        for a in ["-o", outtmpl, url] {
+        for a in ["-o", outtmpl, "--", url] {
             full.push(a.to_string());
         }
         let tag = short(url);
@@ -1203,6 +1212,11 @@ impl Runner {
         let mut meta = Value::Obj(Vec::new());
         for line in splitlines(&out) {
             if let Some(f) = line.strip_prefix("STEM ") {
+                let dir = outtmpl.rfind('/').map_or(".", |i| &outtmpl[..i]).replace("%%", "%");
+                if let Err(why) = own_path(f, &dir, url) {
+                    self.log(&format!("{tag}: transcript: yt-dlp named a file that is not this download's, and it is left alone: {f} -- {why}"));
+                    continue;
+                }
                 // The extension is a guess made without choosing a format; the stem is right.
                 stem = splitext(f).0.to_string();
             } else if let Some(m) = line.strip_prefix("META ") {
@@ -1307,6 +1321,39 @@ impl Runner {
         }
         Ok(format!("{} in {}", what.join(", "), fmt_secs(sys::now() - t0)))
     }
+}
+
+/// Is `path` a file this download could have made? yt-dlp says where it put
+/// the video on a line of its output, and that output also carries whatever
+/// the site said -- so the line is checked, not believed. What ytq does with
+/// the path is rewrite it, record it and, with OUTPUT=sstr, remove it.
+///
+/// It must be in `dir` itself, since `-o` was `dir/NAME`; its name must be in
+/// the alphabet NAME_OPTS keeps; and for a YouTube video, whose id is known
+/// from the URL before anything is asked of the site, the name must end in
+/// that id. The file need not exist: the transcript run names one it never
+/// writes.
+fn own_path(path: &str, dir: &str, url: &str) -> Result<(), String> {
+    let (parent, name) = match path.rfind('/') {
+        Some(i) => (&path[..i], &path[i + 1..]),
+        None => return Err("it is not a full path".into()),
+    };
+    let real = |p: &str| fs::canonicalize(if p.is_empty() { "/" } else { p });
+    match (real(parent), real(dir)) {
+        (Ok(a), Ok(b)) if a == b => {}
+        (Ok(_), Ok(b)) => return Err(format!("it is not in {}", b.display())),
+        (Err(e), _) => return Err(format!("its folder cannot be read: {e}")),
+        (_, Err(e)) => return Err(format!("{dir} cannot be read: {e}")),
+    }
+    if name.is_empty() || name.starts_with('.') || !name.chars().all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.')) {
+        return Err("its name is not one ytq gives".into());
+    }
+    if let Some(id) = first_id(url) {
+        if !name.split('.').next().unwrap_or("").ends_with(&id) {
+            return Err(format!("its name does not end in {id}"));
+        }
+    }
+    Ok(())
 }
 
 /// What the transcript run brought back.
@@ -2086,6 +2133,39 @@ mod tests {
         let map = vec![pt(0.0, 1.0), pt(10.0, 0.2), pt(20.0, 0.1), pt(30.0, 0.3), pt(40.0, 0.9), pt(50.0, 0.8), pt(60.0, 0.1), pt(70.0, 0.5), pt(80.0, 0.2), pt(90.0, 0.25)];
         assert_eq!(most_replayed(&map, 100.0), vec![45.0, 75.0, 95.0]);
         assert!(most_replayed(&[], 100.0).is_empty());
+    }
+
+    #[test]
+    fn a_path_yt_dlp_names_is_checked_before_it_is_believed() {
+        let d = std::env::temp_dir().join(format!("sstr-own-path-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&d);
+        fs::create_dir_all(d.join("out/deeper")).unwrap();
+        fs::create_dir_all(d.join("elsewhere")).unwrap();
+        std::os::unix::fs::symlink(d.join("out"), d.join("link")).unwrap();
+        let p = |s: &str| format!("{}/{s}", d.display());
+        let yt = "https://www.youtube.com/watch?v=jNQXAC9IVRw";
+        // In DIR, in ytq's alphabet, ending in the video's id -- whether or
+        // not the file is there, and by whichever name DIR is reached.
+        assert_eq!(own_path(&p("out/jawed-Me_at_the_zoo_jNQXAC9IVRw.mp4"), &p("out"), yt), Ok(()));
+        assert_eq!(own_path(&p("out/jNQXAC9IVRw.webm"), &p("link"), yt), Ok(()));
+        assert_eq!(own_path(&p("link/jNQXAC9IVRw.webm"), &p("out/"), yt), Ok(()));
+        // Anywhere else is refused: beside DIR, under it, above it.
+        assert!(own_path(&p("elsewhere/x_jNQXAC9IVRw.mp4"), &p("out"), yt).is_err());
+        assert!(own_path(&p("out/deeper/x_jNQXAC9IVRw.mp4"), &p("out"), yt).is_err());
+        assert!(own_path(&p("out/../elsewhere/x_jNQXAC9IVRw.mp4"), &p("out"), yt).is_err());
+        assert!(own_path("/etc/passwd", &p("out"), yt).is_err());
+        assert!(own_path("x_jNQXAC9IVRw.mp4", &p("out"), yt).is_err());
+        assert!(own_path(&p("nowhere/x_jNQXAC9IVRw.mp4"), &p("out"), yt).is_err());
+        // Another video's file in the same folder is not this one's.
+        assert!(own_path(&p("out/other_dQw4w9WgXcQ.mp4"), &p("out"), yt).is_err());
+        assert!(own_path(&p("out/jNQXAC9IVRw_other.mp4"), &p("out"), yt).is_err());
+        // A name outside the alphabet is not one ytq gave.
+        assert!(own_path(&p("out/a b_jNQXAC9IVRw.mp4"), &p("out"), yt).is_err());
+        assert!(own_path(&p("out/.hidden_jNQXAC9IVRw.mp4"), &p("out"), yt).is_err());
+        // No id to hold a name to, off YouTube: the folder and the alphabet still hold.
+        assert_eq!(own_path(&p("out/Someone-A_post_1935298536373170512.mp4"), &p("out"), "https://x.com/a/status/1935298536373170512"), Ok(()));
+        assert!(own_path(&p("elsewhere/Someone-A_post_1.mp4"), &p("out"), "https://x.com/a/status/1").is_err());
+        let _ = fs::remove_dir_all(&d);
     }
 
     #[test]
