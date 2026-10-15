@@ -72,15 +72,19 @@ fn info(it: &Value) -> String {
 }
 
 /// The mark after the title of an entry queued from a playlist link.
-fn list_mark(p: &Place) -> String {
+fn list_mark(p: &Place, going: bool) -> String {
     let at = p.index.map(|i| format!(" #{i}")).unwrap_or_default();
-    if p.queued { format!("[playlist{at}: the rest queued]") } else { format!("[playlist{at}: n for the rest]") }
+    match (going, p.queued) {
+        (true, _) => format!("[playlist{at}: going on]"),
+        (false, true) => format!("[playlist{at}: next queued]"),
+        (false, false) => format!("[playlist{at}: n next, N go on]"),
+    }
 }
 
-/// The message line for one: what n will do.
+/// The message line for one: what n and N will do.
 fn list_info(p: &Place) -> String {
     let at = p.index.map(|i| format!(", number {i}")).unwrap_or_default();
-    format!("part of playlist {}{at}: press n to queue the videos after it", p.list)
+    format!("part of playlist {}{at}: n queues the next video, N goes on through the playlist by itself", p.list)
 }
 
 /// This process and its parents: the terminal window it runs in is one of them.
@@ -136,6 +140,8 @@ struct Window {
     /// A message from work done off the key loop (n's playlist read), shown
     /// at the next frame.
     notice: Mutex<Option<String>>,
+    /// N asked to go on through a long playlist: which entry, and when.
+    confirm: Mutex<Option<(String, Instant)>>,
 }
 
 /// `sstr ytq`, and later `ytq`: the window, until q.
@@ -160,6 +166,7 @@ pub fn main(runner: Arc<Runner>) -> i32 {
         held: AtomicBool::new(false),
         ancestors: ancestors(),
         notice: Mutex::new(None),
+        confirm: Mutex::new(None),
     });
     for job in [Window::watcher as fn(&Window), Window::worker] {
         let w = Arc::clone(&win);
@@ -362,13 +369,20 @@ impl Window {
                         "c is for entries marked 'cookies'".into()
                     };
                 }
-                Key::Char('n') if current.is_some() => {
+                Key::Char(c @ ('n' | 'N')) if current.is_some() => {
                     let url = text(current.unwrap(), "url").to_string();
+                    let want = if c == 'N' { playlist::Want::Auto } else { playlist::Want::One };
+                    // A second N on the same entry within 10 s is the yes.
+                    let confirmed = want == playlist::Want::Auto
+                        && self.confirm.lock().unwrap().take().is_some_and(|(u, t)| u == url && t.elapsed() < Duration::from_secs(10));
                     message = if playlist::place(&playlist::all(&r.paths), &url).is_some() {
                         let me = std::sync::Arc::clone(self);
                         std::thread::spawn(move || {
-                            let said = playlist::say(&playlist::next(&me.runner.paths, &url));
-                            *me.notice.lock().unwrap() = Some(said);
+                            let n = playlist::next(&me.runner.paths, &url, want, confirmed);
+                            if matches!(n, playlist::Next::Confirm(_)) {
+                                *me.confirm.lock().unwrap() = Some((url, Instant::now()));
+                            }
+                            *me.notice.lock().unwrap() = Some(playlist::say(&n));
                         });
                         "reading the playlist ...".into()
                     } else {
@@ -467,7 +481,7 @@ impl Window {
                 format!(" {} {:<13} {:<9} {}", mark(st), st, cut(&extra, 9), title_or_url(it))
             };
             let line = match in_list(it) {
-                Some(p) => format!("{line}  {}", list_mark(&p)),
+                Some(p) => format!("{line}  {}", list_mark(&p, playlist::is_auto(&self.runner.paths, &p.list))),
                 None => line,
             };
             let style = Style { color: col.and_then(color), reverse: top + row as i64 == *sel, ..Style::default() };
@@ -477,7 +491,7 @@ impl Window {
             f.put(2, 2, &cut(EMPTY, w - 3), Style::default());
         }
         let chosen = items.get(*sel as usize).and_then(|it| in_list(it).map(|p| (it, p)));
-        let keys = if chosen.is_some() { format!("{KEYS}  n rest of the playlist") } else { KEYS.to_string() };
+        let keys = if chosen.is_some() { format!("{KEYS}  n next in the playlist  N go on") } else { KEYS.to_string() };
         f.put(h - 2, 0, &cut(&keys, w - 1), Style { dim: true, ..Style::default() });
         let bottom = match (message.is_empty(), &chosen) {
             (false, _) => message.to_string(),
@@ -570,9 +584,10 @@ mod tests {
     #[test]
     fn a_playlist_entry_is_marked_and_says_what_n_does() {
         let p = Place { url: "u".into(), list: "PLx".into(), index: Some(2), queued: false };
-        assert_eq!(list_mark(&p), "[playlist #2: n for the rest]");
-        assert_eq!(list_info(&p), "part of playlist PLx, number 2: press n to queue the videos after it");
-        assert_eq!(list_mark(&Place { queued: true, index: None, ..p }), "[playlist: the rest queued]");
+        assert_eq!(list_mark(&p, false), "[playlist #2: n next, N go on]");
+        assert_eq!(list_mark(&p, true), "[playlist #2: going on]");
+        assert_eq!(list_info(&p), "part of playlist PLx, number 2: n queues the next video, N goes on through the playlist by itself");
+        assert_eq!(list_mark(&Place { queued: true, index: None, ..p }, false), "[playlist: next queued]");
     }
 
 }

@@ -183,9 +183,16 @@ can be known without reading the cookies, and it tells "not saved yet" from
 
 A link from a playlist (`watch?v=ID&list=…&index=N`) is queued as the plain
 video, as ever, and its playlist noted in `playlists` beside the queue. The
-window marks such an entry `[playlist #N: n for the rest]`; `n`, or
-`ytq next URL`, reads the playlist (`yt-dlp --flat-playlist`) and queues the
-videos after it in order, each noted in turn, so `n` on the last carries on.
+window marks such an entry `[playlist #N: n next, N go on]`. `n` (`ytq next
+URL`) queues the next video not already in the queue, and only that one: a
+person keeps pressing it to keep going. `N` (`ytq next --auto URL`) makes the
+playlist go on by itself, still one at a time -- each of its videos that is
+done queues the next -- so a playlist of 500 is never 500 entries in the
+queue. Over ten left, `N` asks to be pressed again within 10 s (`--yes` on
+the command line). `N` on a playlist going on stops it, `--stop` likewise,
+and `n` or `N` on any of its videos resumes from there: each is noted with
+its number. The list is read once with `yt-dlp --flat-playlist` when a person
+asks, and kept as `playlist-LIST`; `playlists-auto` names the lists going on.
 Both notes are files of their own rather than fields of an entry, because the
 queue is the Python ytq's format byte for byte (A3); and only an entry from a
 playlist link shows the mark, the key and the message, so every frame the

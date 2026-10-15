@@ -38,7 +38,9 @@ ytq -- a yt-dlp download queue that watches the clipboard.
   ytq run            download what is queued, in this terminal
   ytq status         what is downloading, the step it is on, what is left
   ytq cookies        retry what was waiting on a Brave sign-in
-  ytq next URL...    queue the videos after it in the playlist its link named
+  ytq next URL...    queue the next video of the playlist its link named;
+                     --auto: go on by itself, one at a time (--yes over 10);
+                     --stop: stop going on
   ytq transcript URL...  just the captions, as text, for YouTube videos and Reddit posts
   ytq list           every entry: queued, done, waiting, failed
   ytq retry URL...   put an entry back in the queue (r in the window)
@@ -587,12 +589,28 @@ pub fn main(argv: &[String]) -> i32 {
         // The window's n, as retry is its r: the videos after this one in the
         // playlist its link named. See playlist.rs.
         "next" if args.len() > 1 => {
+            let opts = ["--auto", "--yes", "--stop"];
+            let has = |o: &str| args[1..].iter().any(|a| a == o);
+            let want = if has("--auto") || has("--stop") { playlist::Want::Auto } else { playlist::Want::One };
             let mut bad = 0;
-            for u in &args[1..] {
+            for u in args[1..].iter().filter(|a| !opts.contains(&a.as_str())) {
                 let url = as_url(u).unwrap_or_else(|| u.clone());
-                let n = playlist::next(&ctx.paths, &url);
-                bad += i32::from(!matches!(n, playlist::Next::Queued { .. }));
-                ctx.say(&format!("{}: {}", short(&url), playlist::say(&n)), false);
+                let going = playlist::place(&playlist::all(&ctx.paths), &url).is_some_and(|p| playlist::is_auto(&ctx.paths, &p.list));
+                // N in the window turns going-on off as well as on; here each
+                // way has its own word, so that a script cannot flip it.
+                let n = match (has("--stop"), has("--auto"), going) {
+                    (true, _, true) | (false, true, false) => playlist::next(&ctx.paths, &url, want, has("--yes")),
+                    (true, _, false) => playlist::Next::Failed("its playlist is not going on".into()),
+                    (false, true, true) => playlist::Next::Failed("its playlist is going on already; --stop stops it".into()),
+                    (false, false, _) => playlist::next(&ctx.paths, &url, want, false),
+                };
+                let said = match &n {
+                    playlist::Next::Confirm(k) => format!("{k} videos after it: add --yes to go on through them, one at a time"),
+                    playlist::Next::Failed(why) if why.starts_with("its playlist") => why.clone(),
+                    other => playlist::say(other),
+                };
+                bad += i32::from(!matches!(n, playlist::Next::Queued { .. } | playlist::Next::Stopped));
+                ctx.say(&format!("{}: {said}", short(&url)), false);
             }
             i32::from(bad > 0)
         }

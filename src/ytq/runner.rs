@@ -31,7 +31,7 @@ use crate::ytq::queue::{self, status, text, title_or_url, RunLock};
 use crate::ytq::settings::{DEFAULT_COMMENTS, DEFAULT_FORMAT, DEFAULT_SUBS};
 use crate::ytq::term::printable;
 use crate::ytq::urls::{first_id, py_strip, short, talks};
-use crate::ytq::{brave, sys, textwrap, warm, Paths, DOWNLOADABLE, PENDING};
+use crate::ytq::{brave, playlist, sys, textwrap, warm, Paths, DOWNLOADABLE, PENDING};
 
 pub const COOKIE_WORDS: [&str; 13] =
     ["sign in", "log in", "login", "cookies", "age", "bot", "private video", "members", "premium", "confirm you", "403", "restricted", "subscriber"];
@@ -870,6 +870,8 @@ impl Runner {
             }
             if self.update(&url, vec![("status", Value::str("done")), ("file", Value::str(&kept)), ("progress", Value::str("")), ("error", Value::str("")), ("live", Value::Obj(Vec::new()))]).is_some() {
                 self.say(&format!("done: {}{also}{talk}{not_archived}", if kept.is_empty() { title.as_str() } else { basename(&kept) }), false);
+                // A playlist that goes on by itself (N) queues its next one now.
+                playlist::on_done(&self.paths, &url);
             }
             return End::Finished;
         }
