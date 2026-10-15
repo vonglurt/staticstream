@@ -22,12 +22,12 @@
 //! there is no address to send a key to or to close.
 
 use std::collections::BTreeMap;
-use std::os::unix::process::CommandExt;
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::thread::sleep;
 use std::time::{Duration, Instant};
 
 use crate::format::json::{self, Value};
+use crate::ytq::brave;
 use crate::ytq::runner::{run_timeout, Ran};
 
 /// How long playback may take to start before `k` is sent, in seconds.
@@ -55,13 +55,10 @@ pub struct Warm {
 }
 
 /// Open url in a new Brave window, out of sight, muted, and playing.
-pub fn open(url: &str, log: &dyn Fn(&str)) -> Warm {
+pub fn open(s: &BTreeMap<String, String>, url: &str, log: &dyn Fn(&str)) -> Warm {
     let windows = brave_windows_now();
     let streams: Vec<u64> = brave_streams_now().into_iter().map(|(i, _)| i).collect();
-    let spawned = [vec!["brave", "--new-window", url], vec!["flatpak", "run", "com.brave.Browser", "--new-window", url]]
-        .iter()
-        .any(|cmd| Command::new(cmd[0]).args(&cmd[1..]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn().is_ok());
-    if !spawned {
+    if brave::launch(s, &["--new-window", url], log).is_none() {
         log("cannot run brave; trying Brave's cookies without it");
         return Warm { address: None };
     }
@@ -162,6 +159,11 @@ pub fn close(w: &Warm, log: &dyn Fn(&str)) {
     log(&format!("asked window {a} to close twice and it is still open; close it by hand"));
 }
 
+/// Close Brave's window at `address`, as [`close`] does warming's.
+pub fn close_window(address: &str, log: &dyn Fn(&str)) {
+    close(&Warm { address: Some(address.to_string()) }, log);
+}
+
 /// hyprctl's answer, or None where there is no Hyprland to ask.
 fn hyprctl(args: &[&str]) -> Option<String> {
     std::env::var_os("HYPRLAND_INSTANCE_SIGNATURE")?;
@@ -171,7 +173,8 @@ fn hyprctl(args: &[&str]) -> Option<String> {
     }
 }
 
-fn brave_windows_now() -> Option<Vec<String>> {
+/// The addresses of Brave's windows now, or None where there is no Hyprland.
+pub fn brave_windows_now() -> Option<Vec<String>> {
     hyprctl(&["clients", "-j"]).map(|out| brave_windows(&out))
 }
 

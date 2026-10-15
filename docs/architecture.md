@@ -158,6 +158,38 @@ back to the specification. It is checked, not assumed.
 rejected`. Three are history (`ytq clear` forgets those); five are pending.
 `cookies` is in neither list, because it is waiting on a *person*, and a
 runner that treated it as work would loop against a sign-in page forever.
+Leaving it is the person's move, and both of their keys mean "signed in":
+`c` and `r` (or `ytq retry URL`) send it to `retry-cookies`. **This is a
+deliberate difference from the Python ytq**, whose `r` sent it to `queued` --
+plain yt-dlp again, the same sign-in page, and Brave's cookies never tried.
+
+When ytq starts Brave itself (a sign-in page, or a video to warm), it first
+turns Brave's "Continue where you left off" into "Open the New Tab page", so
+that the window ytq opens is not one among every tab of the last session.
+Only while Brave is not running, only from that setting or from no setting,
+and as a one-value text edit that is parsed back before it is kept:
+`src/ytq/brave.rs`.
+
+A sign-in's Brave is noted (when, and which window, in `brave-signin` beside
+the queue), and the cookie retry first asks whether Brave has written its
+`Cookies` file since. Brave keeps cookies in memory and writes them about
+every 30 s and when it closes, so a retry pressed straight after signing in
+could read a file without the sign-in in it. If the file is older than the
+sign-in page, ytq closes the window it opened -- by address, never one of
+the person's own -- and waits up to 30 s for the file to move, or for Brave
+to exit; the log says which. This watches a time, not a cookie: it is what
+can be known without reading the cookies, and it tells "not saved yet" from
+"not signed in".
+
+A link from a playlist (`watch?v=ID&list=…&index=N`) is queued as the plain
+video, as ever, and its playlist noted in `playlists` beside the queue. The
+window marks such an entry `[playlist #N: n for the rest]`; `n`, or
+`ytq next URL`, reads the playlist (`yt-dlp --flat-playlist`) and queues the
+videos after it in order, each noted in turn, so `n` on the last carries on.
+Both notes are files of their own rather than fields of an entry, because the
+queue is the Python ytq's format byte for byte (A3); and only an entry from a
+playlist link shows the mark, the key and the message, so every frame the
+window crosscheck compares is as the Python ytq drew it.
 
 **A5 — The original is deleted only after the copy has been proved.** The MP4
 goes only when the capture has been written, read back, verified, and its
@@ -603,6 +635,16 @@ YouTube one: the notes cost no second yt-dlp run at all, since the metadata
 is already in hand from the run that has just finished, and only the captions
 need a YouTube video and a `SUBS` list. That was phase 5's gap and it is
 closed.
+
+A Reddit post gets the captions and the discussion as well (`urls::talks`).
+yt-dlp's Reddit extractor gives neither, and since Reddit kept its `.json` for
+signed-in accounts it gives nothing at all without one; Copal's yt-dlp plugin
+`copal_reddit` (stage 10 writes it into `/etc/yt-dlp/plugins`) reads the
+post's public page instead, after the stock extractor is refused: the video,
+Reddit's captions with their one-cue-a-word karaoke folded into one cue a
+line, the post's details, and the comments the first page holds (about 25 of
+a thread, with their first replies). Without the plugin a Reddit download
+fails as it did before, and ytq asks for a Brave sign-in.
 
 Its Notes block names where a post came from in whichever way its site means
 it — `r/SUBREDDIT` for Reddit, the `@handle` for x.com, the channel for

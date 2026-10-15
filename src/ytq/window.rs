@@ -16,7 +16,7 @@ use std::collections::HashSet;
 use std::io::IsTerminal;
 use std::process::Command;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
 
 use crate::format::json::{self, Value};
@@ -28,6 +28,7 @@ use crate::ytq::queue::{self, status, text, title_or_url, RunLock};
 use crate::ytq::runner::{self, brave_ready, run_timeout, Ran, Runner};
 use crate::ytq::term::{self, cut, ljust, Frame, Key, Keys, Screen, Style, Term};
 use crate::ytq::urls::{as_url, py_strip, short};
+use crate::ytq::playlist::{self, Place};
 use crate::ytq::{sys, HISTORY, ORDER};
 
 const KEYS: &str = " a add  d delete  r retry  c continue with Brave's cookies  o open in Brave  p pause  h h clear history  q quit";
@@ -68,6 +69,18 @@ fn info(it: &Value) -> String {
     }
     let file = text(it, "file");
     if file.is_empty() { text(it, "url") } else { file }.to_string()
+}
+
+/// The mark after the title of an entry queued from a playlist link.
+fn list_mark(p: &Place) -> String {
+    let at = p.index.map(|i| format!(" #{i}")).unwrap_or_default();
+    if p.queued { format!("[playlist{at}: the rest queued]") } else { format!("[playlist{at}: n for the rest]") }
+}
+
+/// The message line for one: what n will do.
+fn list_info(p: &Place) -> String {
+    let at = p.index.map(|i| format!(", number {i}")).unwrap_or_default();
+    format!("part of playlist {}{at}: press n to queue the videos after it", p.list)
 }
 
 /// This process and its parents: the terminal window it runs in is one of them.
@@ -120,6 +133,9 @@ struct Window {
     /// run.lock is this window's: the Python ytq's `RUN.fd`.
     held: AtomicBool,
     ancestors: HashSet<u64>,
+    /// A message from work done off the key loop (n's playlist read), shown
+    /// at the next frame.
+    notice: Mutex<Option<String>>,
 }
 
 /// `sstr ytq`, and later `ytq`: the window, until q.
@@ -143,6 +159,7 @@ pub fn main(runner: Arc<Runner>) -> i32 {
         focused: AtomicBool::new(true),
         held: AtomicBool::new(false),
         ancestors: ancestors(),
+        notice: Mutex::new(None),
     });
     for job in [Window::watcher as fn(&Window), Window::worker] {
         let w = Arc::clone(&win);
@@ -177,6 +194,7 @@ impl Window {
     fn watcher(&self) {
         let paths = &self.runner.paths;
         let mut last = read_clipboard();
+        playlist::note(paths, &last);
         if let Some(url) = as_url(&last) {
             let _ = queue::enqueue(paths, &RunLock::default(), &[url], false);
         }
@@ -195,6 +213,7 @@ impl Window {
                 continue;
             }
             last = text;
+            playlist::note(paths, &last);
             if let Some(url) = as_url(&last) {
                 let _ = queue::enqueue(paths, &RunLock::default(), &[url], false);
             }
@@ -224,7 +243,7 @@ impl Window {
     }
 
     /// `tui(win)`: draw, wait half a second for a key, do what it says.
-    fn run(&self, keys: &Keys) -> i32 {
+    fn run(self: &Arc<Self>, keys: &Keys) -> i32 {
         let r = &self.runner;
         let home = r.home.to_string_lossy().into_owned();
         let colors = std::env::var("TERM").map_or(false, |t| !t.is_empty() && t != "dumb");
@@ -235,6 +254,9 @@ impl Window {
         loop {
             if runner::signalled() {
                 break;
+            }
+            if let Some(m) = self.notice.lock().unwrap().take() {
+                message = m;
             }
             let mut items = queue::snapshot(&r.paths);
             items.sort_by(|a, b| order_key(a).partial_cmp(&order_key(b)).unwrap_or(std::cmp::Ordering::Equal));
@@ -261,6 +283,7 @@ impl Window {
                 Key::Up | Key::Char('k') => sel -= 1,
                 Key::Char('a') => {
                     let url = prompt(keys, &mut screen, (h as i64, w as i64), "URL:");
+                    playlist::note(&r.paths, &url);
                     if let Some(u) = as_url(&url) {
                         message = match queue::enqueue(&r.paths, &RunLock::default(), &[u], false) {
                             Ok((added, _)) if !added.is_empty() => "queued".into(),
@@ -339,6 +362,19 @@ impl Window {
                         "c is for entries marked 'cookies'".into()
                     };
                 }
+                Key::Char('n') if current.is_some() => {
+                    let url = text(current.unwrap(), "url").to_string();
+                    message = if playlist::place(&playlist::all(&r.paths), &url).is_some() {
+                        let me = std::sync::Arc::clone(self);
+                        std::thread::spawn(move || {
+                            let said = playlist::say(&playlist::next(&me.runner.paths, &url));
+                            *me.notice.lock().unwrap() = Some(said);
+                        });
+                        "reading the playlist ...".into()
+                    } else {
+                        playlist::say(&playlist::Next::NotInOne)
+                    };
+                }
                 Key::Char('o') if current.is_some() => {
                     r.open_browser(text(current.unwrap(), "url"));
                 }
@@ -410,6 +446,11 @@ impl Window {
         let room = (h - 3 - top_y).max(1);
         *sel = (*sel).min(items.len() as i64 - 1).max(0);
         let top = (*sel - (room - 1)).max(0);
+        // Only an entry queued from a playlist link shows any of this: every
+        // other row, the keys line and the message are as the Python ytq drew
+        // them.
+        let places = playlist::all(&self.runner.paths);
+        let in_list = |it: &Value| playlist::place(&places, text(it, "url"));
         for (row, it) in items.iter().skip(top as usize).take(room as usize).enumerate() {
             let st = status(it);
             let col = match st {
@@ -425,14 +466,24 @@ impl Window {
                 let extra = if st == "queued" || st == "done" { text(it, "quality").to_string() } else { cut(text(it, "error"), 40) };
                 format!(" {} {:<13} {:<9} {}", mark(st), st, cut(&extra, 9), title_or_url(it))
             };
+            let line = match in_list(it) {
+                Some(p) => format!("{line}  {}", list_mark(&p)),
+                None => line,
+            };
             let style = Style { color: col.and_then(color), reverse: top + row as i64 == *sel, ..Style::default() };
             f.put(top_y + row as i64, 0, &ljust(&cut(&line, w - 1), w - 1), style);
         }
         if items.is_empty() {
             f.put(2, 2, &cut(EMPTY, w - 3), Style::default());
         }
-        f.put(h - 2, 0, &cut(KEYS, w - 1), Style { dim: true, ..Style::default() });
-        let bottom = if message.is_empty() { items.get(*sel as usize).map(info).unwrap_or_default() } else { message.to_string() };
+        let chosen = items.get(*sel as usize).and_then(|it| in_list(it).map(|p| (it, p)));
+        let keys = if chosen.is_some() { format!("{KEYS}  n rest of the playlist") } else { KEYS.to_string() };
+        f.put(h - 2, 0, &cut(&keys, w - 1), Style { dim: true, ..Style::default() });
+        let bottom = match (message.is_empty(), &chosen) {
+            (false, _) => message.to_string(),
+            (true, Some((it, p))) if !p.queued && !matches!(status(it), "cookies" | "failed" | "rejected" | "retry") => list_info(p),
+            (true, _) => items.get(*sel as usize).map(info).unwrap_or_default(),
+        };
         f.put(h - 1, 0, &cut(&bottom, w - 1), Style::default());
         f
     }
@@ -515,4 +566,13 @@ mod tests {
         let got: Vec<(&str, f64)> = items.iter().map(|i| (status(i), number(i.get("added")))).collect();
         assert_eq!(got, vec![("downloading", 9.0), ("strange", 0.0), ("queued", 2.0), ("queued", 3.0), ("done", 1.0)]);
     }
+
+    #[test]
+    fn a_playlist_entry_is_marked_and_says_what_n_does() {
+        let p = Place { url: "u".into(), list: "PLx".into(), index: Some(2), queued: false };
+        assert_eq!(list_mark(&p), "[playlist #2: n for the rest]");
+        assert_eq!(list_info(&p), "part of playlist PLx, number 2: press n to queue the videos after it");
+        assert_eq!(list_mark(&Place { queued: true, index: None, ..p }), "[playlist: the rest queued]");
+    }
+
 }

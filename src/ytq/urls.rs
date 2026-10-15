@@ -153,6 +153,30 @@ pub fn youtube_ids(text: &str) -> Vec<String> {
     out
 }
 
+/// Does a download of `url` get a transcript and a discussion? A YouTube
+/// video does, as in the Python ytq. So does a Reddit post: yt-dlp's own
+/// Reddit extractor has neither, and reads nothing at all now without an
+/// account, but Copal's yt-dlp plugin (copal_reddit, written by stage 10)
+/// reads the post's page and gives both. Other sites are asked for neither,
+/// as before.
+pub fn talks(url: &str) -> bool {
+    first_id(url).is_some() || is_reddit_post(url)
+}
+
+/// `https://(www.|old.|new.)reddit.com/r/NAME/comments/ID...`, or `/user/`.
+pub fn is_reddit_post(url: &str) -> bool {
+    let Some(rest) = url.strip_prefix("https://").or_else(|| url.strip_prefix("http://")) else { return false };
+    let Some((host, path)) = rest.split_once('/') else { return false };
+    let host = host.to_ascii_lowercase();
+    let host = host.split_once('.').filter(|(sub, _)| matches!(*sub, "www" | "old" | "new" | "m")).map_or(host.as_str(), |(_, h)| h);
+    if host != "reddit.com" {
+        return false;
+    }
+    let parts: Vec<&str> = path.split('/').collect();
+    let at = if matches!(parts.first(), Some(&"r") | Some(&"user")) { 2 } else { 0 };
+    parts.get(at) == Some(&"comments") && parts.get(at + 1).is_some_and(|id| !id.is_empty() && id.bytes().all(|b| b.is_ascii_alphanumeric()))
+}
+
 /// `YT_RE.search(text)`: the first id.
 pub fn first_id(text: &str) -> Option<String> {
     let c: Vec<char> = text.chars().collect();
@@ -411,4 +435,17 @@ mod tests {
     fn entities() {
         assert_eq!(html_unescape("a&amp;b &lt;&gt; &#61; &#x3D; &ampx &bogus; &#128;"), "a&b <> = = &x &bogus; \u{20ac}");
     }
+
+    #[test]
+    fn a_reddit_post_talks_and_other_sites_do_not() {
+        assert!(talks("https://www.reddit.com/r/interesting/comments/1x6nbkn/michael_jackson_was_performing_in_seoul_in_1996/"));
+        assert!(talks("https://old.reddit.com/r/aww/comments/abc123/"));
+        assert!(talks("https://reddit.com/comments/abc123"));
+        assert!(talks("https://www.youtube.com/watch?v=jNQXAC9IVRw"));
+        assert!(!talks("https://www.reddit.com/r/interesting/"));
+        assert!(!talks("https://notreddit.com/r/x/comments/abc/"));
+        assert!(!talks("https://vimeo.com/12345"));
+        assert!(!talks("https://example.com/merge"));
+    }
+
 }

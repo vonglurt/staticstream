@@ -18,10 +18,12 @@
 
 use std::path::{Path, PathBuf};
 
+pub mod brave;
 pub mod clean;
 pub mod cli;
 pub mod live;
 pub mod log;
+pub mod playlist;
 pub mod queue;
 pub mod runner;
 pub mod settings;

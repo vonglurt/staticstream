@@ -17,8 +17,8 @@ use crate::ytq::log::{log, say, Mode};
 use crate::ytq::queue::{self, status, text, title_or_url, RunLock};
 use crate::ytq::runner::{brave_ready, run_timeout, Ran, Runner, NAME};
 use crate::ytq::term::printable;
-use crate::ytq::urls::{as_url, first_id, py_strip, short, youtube_urls};
-use crate::ytq::{settings, Paths, HISTORY, ORDER, PENDING};
+use crate::ytq::urls::{as_url, py_strip, short, talks, youtube_urls};
+use crate::ytq::{playlist, settings, Paths, HISTORY, ORDER, PENDING};
 
 /// The Python ytq's own header, which its help prints.
 const HEADER: &str = "SPDX-License-Identifier: MIT
@@ -38,7 +38,8 @@ ytq -- a yt-dlp download queue that watches the clipboard.
   ytq run            download what is queued, in this terminal
   ytq status         what is downloading, the step it is on, what is left
   ytq cookies        retry what was waiting on a Brave sign-in
-  ytq transcript URL...  just the captions, as text, for YouTube videos
+  ytq next URL...    queue the videos after it in the playlist its link named
+  ytq transcript URL...  just the captions, as text, for YouTube videos and Reddit posts
   ytq list           every entry: queued, done, waiting, failed
   ytq retry URL...   put an entry back in the queue (r in the window)
   ytq forget URL...  take an entry out of the queue (d in the window); the
@@ -189,8 +190,9 @@ pub(crate) fn read_clipboard() -> String {
 
 /// `clipboard_urls()`: the YouTube videos in the clipboard, however much text
 /// they are buried in; failing those, the clipboard itself if it is one URL.
-fn clipboard_urls() -> Vec<String> {
+fn clipboard_urls(paths: &Paths) -> Vec<String> {
     let text = read_clipboard();
+    playlist::note(paths, &text);
     let urls = youtube_urls(&text);
     if !urls.is_empty() {
         return urls;
@@ -476,6 +478,7 @@ pub fn main(argv: &[String]) -> i32 {
         "add" if args.len() > 1 => {
             let mut urls = Vec::new();
             for u in &args[1..] {
+                playlist::note(&ctx.paths, u);
                 match as_url(u) {
                     Some(url) => urls.push(url),
                     None => ctx.say(&format!("not a URL: {u}"), false),
@@ -493,7 +496,7 @@ pub fn main(argv: &[String]) -> i32 {
             0
         }
         "clip" => {
-            let urls = clipboard_urls();
+            let urls = clipboard_urls(&ctx.paths);
             if urls.is_empty() {
                 ctx.say("the clipboard holds no URL and no YouTube link", false);
                 return 1;
@@ -581,13 +584,25 @@ pub fn main(argv: &[String]) -> i32 {
             let runner = Arc::new(Runner::new(ctx.paths.clone(), ctx.home.clone(), ctx.s.clone(), ctx.mode));
             runner.cmd_run(flags.contains(&"--quiet"), &argv.join(" "))
         }
+        // The window's n, as retry is its r: the videos after this one in the
+        // playlist its link named. See playlist.rs.
+        "next" if args.len() > 1 => {
+            let mut bad = 0;
+            for u in &args[1..] {
+                let url = as_url(u).unwrap_or_else(|| u.clone());
+                let n = playlist::next(&ctx.paths, &url);
+                bad += i32::from(!matches!(n, playlist::Next::Queued { .. }));
+                ctx.say(&format!("{}: {}", short(&url), playlist::say(&n)), false);
+            }
+            i32::from(bad > 0)
+        }
         "transcript" if args.len() > 1 => {
             let runner = Runner::new(ctx.paths.clone(), ctx.home.clone(), ctx.s.clone(), ctx.mode);
             let dir = ctx.setting("DIR").to_string();
             let mut failed = false;
             for u in &args[1..] {
                 let u = as_url(u).unwrap_or_else(|| u.clone());
-                if first_id(&u).is_none() {
+                if !talks(&u) {
                     println!("not a YouTube video: {u}");
                     failed = true;
                     continue;

@@ -130,13 +130,27 @@ pub enum Retried {
 /// An entry with no title has never been looked at, so it goes back to
 /// `checking`; one with a title has, so it goes back to `queued`. The error
 /// goes, because it belongs to the attempt being abandoned.
+///
+/// **One marked `cookies` goes to `retry-cookies`**, as `c` would send it. The
+/// Python ytq sent it to `queued`, which is a plain yt-dlp again: the site
+/// that asked for a sign-in asks again, and the entry is back waiting on one,
+/// with Brave's cookies never tried. A person pressing `r` on an entry that is
+/// waiting for a sign-in has signed in. So does one that failed after its
+/// cookie try (`cookie_tried`): plain, it would fail at once, because the
+/// runner gives an entry one cookie try and no second sign-in wait.
 pub fn retry(paths: &Paths, url: &str) -> io::Result<Retried> {
     edit(paths, |items| {
         let Some(it) = find(items, url) else { return Retried::Missing };
         if status(it) == "downloading" {
             return Retried::Downloading;
         }
-        let back = if text(it, "title").is_empty() { "checking" } else { "queued" };
+        let back = if status(it) == "cookies" || it.get("cookie_tried").is_some_and(|v| matches!(v, Value::Bool(true))) {
+            "retry-cookies"
+        } else if text(it, "title").is_empty() {
+            "checking"
+        } else {
+            "queued"
+        };
         it.set("status", Value::str(back));
         it.set("error", Value::str(""));
         Retried::Queued(back)
@@ -351,6 +365,26 @@ mod tests {
         assert_eq!(retry(&paths, U).unwrap(), Retried::Queued("queued"));
         assert_eq!(field(&paths, U, "status"), "queued");
         assert_eq!(field(&paths, U, "error"), "");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Waiting on a sign-in, `r` means signed in: Brave's cookies, as `c`.
+    #[test]
+    fn retry_sends_an_entry_waiting_on_a_sign_in_to_its_cookie_retry() {
+        let (home, paths) = scratch("retry-cookies");
+        let r = "https://www.reddit.com/r/interesting/comments/1x6nbkn/x/";
+        write(&paths, &format!(r#"[{{"url": "{r}", "title": "{r}", "status": "cookies", "error": "Account authentication is required", "added": 1.0}}]"#));
+        assert_eq!(retry(&paths, r).unwrap(), Retried::Queued("retry-cookies"));
+        assert_eq!(field(&paths, r, "status"), "retry-cookies");
+        let _ = std::fs::remove_dir_all(&home);
+    }
+
+    /// Failed after its cookie try: plain again would fail without asking.
+    #[test]
+    fn retry_gives_an_entry_that_needed_cookies_its_cookies_again() {
+        let (home, paths) = scratch("retry-cookie-tried");
+        write(&paths, &format!(r#"[{{"url": "{U}", "title": "x", "status": "failed", "cookie_tried": true, "error": "Sign in", "added": 1.0}}]"#));
+        assert_eq!(retry(&paths, U).unwrap(), Retried::Queued("retry-cookies"));
         let _ = std::fs::remove_dir_all(&home);
     }
 

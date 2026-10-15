@@ -30,8 +30,8 @@ use crate::ytq::log::{log, say, splitlines, Mode};
 use crate::ytq::queue::{self, status, text, title_or_url, RunLock};
 use crate::ytq::settings::{DEFAULT_COMMENTS, DEFAULT_FORMAT, DEFAULT_SUBS};
 use crate::ytq::term::printable;
-use crate::ytq::urls::{first_id, py_strip, short};
-use crate::ytq::{sys, textwrap, warm, Paths, DOWNLOADABLE, PENDING};
+use crate::ytq::urls::{first_id, py_strip, short, talks};
+use crate::ytq::{brave, sys, textwrap, warm, Paths, DOWNLOADABLE, PENDING};
 
 pub const COOKIE_WORDS: [&str; 13] =
     ["sign in", "log in", "login", "cookies", "age", "bot", "private video", "members", "premium", "confirm you", "403", "restricted", "subscriber"];
@@ -454,15 +454,45 @@ impl Runner {
         .flatten()
     }
 
+    /// Brave on `url` (see brave.rs: not on the last session's tabs), else
+    /// whatever xdg-open picks.
     pub fn open_browser(&self, url: &str) -> bool {
-        for cmd in [vec!["brave", url], vec!["flatpak", "run", "com.brave.Browser", url], vec!["xdg-open", url]] {
-            let spawned = Command::new(cmd[0]).args(&cmd[1..]).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn();
-            if spawned.is_ok() {
+        let started = brave::launch(&self.s, &[url], &|m: &str| self.log(m)).map(|pre| [pre, &[url]].concat());
+        let started = started.or_else(|| Command::new("xdg-open").arg(url).stdin(Stdio::null()).stdout(Stdio::null()).stderr(Stdio::null()).process_group(0).spawn().is_ok().then(|| vec!["xdg-open", url]));
+        match started {
+            Some(cmd) => {
                 self.log(&format!("opened browser: {}", cmd[..2].join(" ")));
-                return true;
+                true
             }
+            None => false,
         }
-        false
+    }
+
+    /// Brave on `url` for a sign-in, noted so that the cookie retry can tell
+    /// whether Brave has written its cookies since (brave::settle). Its
+    /// window is looked for in the background: a Brave started cold takes a
+    /// while to draw one, and one already running opens a tab in a window of
+    /// the person's own instead -- no new window, and nothing ytq will close.
+    fn open_for_signin(&self, url: &str) {
+        let before = warm::brave_windows_now();
+        let opened = sys::now();
+        if !self.open_browser(url) {
+            return;
+        }
+        brave::record_signin(&self.paths, url, opened, None);
+        if let Some(before) = before {
+            let (paths, url) = (self.paths.clone(), url.to_string());
+            std::thread::spawn(move || {
+                let t0 = Instant::now();
+                while t0.elapsed() < Duration::from_secs(20) {
+                    if let Some(w) = warm::brave_windows_now().and_then(|now| now.into_iter().find(|a| !before.contains(a))) {
+                        brave::record_signin(&paths, &url, opened, Some(&w));
+                        return;
+                    }
+                    std::thread::sleep(Duration::from_millis(250));
+                }
+            });
+        }
     }
 
     /// `download(it, with_cookies)`.
@@ -470,6 +500,11 @@ impl Runner {
         let url = text(it, "url").to_string();
         let title = title_or_url(it).to_string();
         let tag = short(&url);
+        if with_cookies {
+            if let Some((opened, window)) = brave::take_signin(&self.paths, &url) {
+                brave::settle(&self.s, opened, window.as_deref(), &|m: &str| self.log(&format!("{tag}: {m}")));
+            }
+        }
         let dir = self.setting("DIR");
         let _ = fs::create_dir_all(&dir);
         let attempts = number(it.get("attempts"));
@@ -674,7 +709,7 @@ impl Runner {
             // Nothing is written to the .txt until the capture is settled, so
             // the notes can name the file that was kept.
             let mut fetched: Option<Result<Fetched, String>> = None;
-            if !fname.is_empty() && !subs.is_empty() && first_id(&url).is_some() {
+            if !fname.is_empty() && !subs.is_empty() && talks(&url) {
                 live.set("phase", Value::str("fetching the transcript"));
                 live.set("since", Value::Num(sys::now()));
                 live.set("last", Value::str(""));
@@ -813,7 +848,7 @@ impl Runner {
             // fetch that broke earns "(no discussion)".
             let mut talk = String::new();
             let cap = comments_of(&self.s);
-            if !fname.is_empty() && !cap.is_empty() && first_id(&url).is_some() {
+            if !fname.is_empty() && !cap.is_empty() && talks(&url) {
                 live.set("phase", Value::str("fetching the discussion"));
                 live.set("since", Value::Num(sys::now()));
                 live.set("last", Value::str(""));
@@ -844,7 +879,7 @@ impl Runner {
         if cookie_problem(&err) && !cookie_tried {
             self.log(&format!("{tag}: that reads like a login, age or bot check; waiting on a Brave sign-in"));
             if self.update(&url, clear("cookies")).is_some() {
-                self.open_browser(&url);
+                self.open_for_signin(&url);
                 self.say(&format!("needs a Brave sign-in: {title} -- Brave is open on it; sign in, then 'ytq cookies'"), true);
             }
         } else if attempts < 2.0 && !cookie_tried {
@@ -1285,7 +1320,7 @@ impl Runner {
         }
         self.log(&format!("{tag}: warm: the captions were refused for the rate limit; playing it in Brave"));
         let say = |m: &str| self.log(&format!("{tag}: warm: {m}"));
-        let w = warm::open(url, &say);
+        let w = warm::open(&self.s, url, &say);
         let again = self.fetch_transcript(url, outtmpl, &brave_cmd(&self.s), cover);
         warm::close(&w, &say);
         match again {
