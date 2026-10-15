@@ -144,6 +144,9 @@ Settings, if you want them, in ~/.config/ytq/config as KEY=VALUE:
   SUBS      caption languages for the transcript, a yt-dlp --sub-langs list
             (default en,en-orig,en-US,en-GB: exact names, since en.* also
             takes YouTube's translations into English); SUBS= turns it off
+  WARM      on (the default) or off: when YouTube refuses the captions with a
+            429, open the video in a hidden Brave window, play it muted, try
+            again with Brave's cookies, and close that window
   OUTPUT    what a finished download leaves: sstr (a capture, the default),
             mp4 (the downloaded file, and no capture) or both
   ARCHIVE_DIR  where captures go                        (default: DIR)

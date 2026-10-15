@@ -29,6 +29,7 @@ pub mod sys;
 pub mod term;
 pub mod textwrap;
 pub mod urls;
+pub mod warm;
 pub mod window;
 
 /// What a runner may take next, in the order it looks for them.

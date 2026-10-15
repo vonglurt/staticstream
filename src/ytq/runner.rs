@@ -31,7 +31,7 @@ use crate::ytq::queue::{self, status, text, title_or_url, RunLock};
 use crate::ytq::settings::{DEFAULT_COMMENTS, DEFAULT_FORMAT, DEFAULT_SUBS};
 use crate::ytq::term::printable;
 use crate::ytq::urls::{first_id, py_strip, short};
-use crate::ytq::{sys, textwrap, Paths, DOWNLOADABLE, PENDING};
+use crate::ytq::{sys, textwrap, warm, Paths, DOWNLOADABLE, PENDING};
 
 pub const COOKIE_WORDS: [&str; 13] =
     ["sign in", "log in", "login", "cookies", "age", "bot", "private video", "members", "premium", "confirm you", "403", "restricted", "subscriber"];
@@ -682,7 +682,18 @@ impl Runner {
                 if self.update(&url, vec![("progress", Value::str("transcript")), ("live", live.clone())]).is_some() {
                     let tmpl = format!("{}.%(ext)s", splitext(&fname).0.replace('%', "%%"));
                     let tcmd = if with_cookies { brave_cmd(&self.s) } else { vec!["yt-dlp".into()] };
-                    fetched = Some(self.fetch_transcript(&url, &tmpl, &tcmd, taggable));
+                    let mut got = self.fetch_transcript(&url, &tmpl, &tcmd, taggable);
+                    if let Ok(f) = got {
+                        got = Ok(if self.wants_warming(&f) {
+                            live.set("phase", Value::str("playing it in Brave, for the captions"));
+                            live.set("since", Value::Num(sys::now()));
+                            self.update(&url, vec![("progress", Value::str("warming")), ("live", live.clone())]);
+                            self.warm_retry(&url, &tmpl, taggable, f)
+                        } else {
+                            f
+                        });
+                    }
+                    fetched = Some(got);
                 }
             }
             let info = match &fetched {
@@ -1137,7 +1148,10 @@ impl Runner {
     /// YouTube answers 429 to captions far sooner than to video -- fails the whole
     /// run it is part of, and would put a finished video back in the queue.
     pub fn transcript(&self, url: &str, outtmpl: &str, cmd: &[String], video: Option<&str>) -> Result<String, String> {
-        let got = self.fetch_transcript(url, outtmpl, cmd, false)?;
+        let mut got = self.fetch_transcript(url, outtmpl, cmd, false)?;
+        if self.wants_warming(&got) {
+            got = self.warm_retry(url, outtmpl, false, got);
+        }
         let (lang, text) = got.captions?;
         let video = match video {
             Some(v) => Some(v.to_string()),
@@ -1253,6 +1267,37 @@ impl Runner {
             let _ = fs::remove_file(v);
         }
         Ok(Fetched { stem, meta, captions, cover })
+    }
+
+    /// Did the captions fail on YouTube's rate limit, with WARM on?
+    fn wants_warming(&self, f: &Fetched) -> bool {
+        matches!(&f.captions, Err(why) if warm::rate_limited(why)) && warm::warm_of(&self.s)
+    }
+
+    /// The captions again, after the video has played in Brave: see warm.rs.
+    /// One more try and no more; the first run's answer stands when this one
+    /// cannot be made at all.
+    fn warm_retry(&self, url: &str, outtmpl: &str, cover: bool, first: Fetched) -> Fetched {
+        let tag = short(url);
+        if let Some(why) = brave_ready(&self.s) {
+            self.log(&format!("{tag}: warm: not tried -- {why}"));
+            return first;
+        }
+        self.log(&format!("{tag}: warm: the captions were refused for the rate limit; playing it in Brave"));
+        let say = |m: &str| self.log(&format!("{tag}: warm: {m}"));
+        let w = warm::open(url, &say);
+        let again = self.fetch_transcript(url, outtmpl, &brave_cmd(&self.s), cover);
+        warm::close(&w, &say);
+        match again {
+            Ok(f) => {
+                match &f.captions {
+                    Ok((lang, _)) => say(&format!("the {lang} captions came through")),
+                    Err(why) => say(&format!("still none -- {why}")),
+                }
+                f
+            }
+            Err(_) => first,
+        }
     }
 
     /// Write what ytq knows into the video file itself: the fields of `meta`

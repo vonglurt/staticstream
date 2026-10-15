@@ -76,8 +76,10 @@ py() { h=$1; shift; env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$h" PATH="$STU
 # shellcheck disable=SC2086  # $YTQ is 'sstr ytq' by default: two words
 rs() { h=$1; shift; env -u XDG_CONFIG_HOME -u XDG_DATA_HOME HOME="$h" PATH="$STUB:$PATH" $YTQ "$@"; }
 # OUTPUT=mp4: what the Python ytq does, which is what this compares -- and is
-# step 2c's "OUTPUT=mp4 leaves today's files". The Python ytq ignores the key.
-home() { d="$W/$1"; rm -rf "$d"; mkdir -p "$d/.config/ytq" "$d/out"; printf 'DIR=%s/out\nOUTPUT=mp4\n' "$d" > "$d/.config/ytq/config"; echo "$d"; }
+# step 2c's "OUTPUT=mp4 leaves today's files". WARM=off: the Python ytq never
+# plays a video in Brave after a caption 429, and F's fake yt-dlp answers 429.
+# The Python ytq ignores both keys.
+home() { d="$W/$1"; rm -rf "$d"; mkdir -p "$d/.config/ytq" "$d/out"; printf 'DIR=%s/out\nOUTPUT=mp4\nWARM=off\n' "$d" > "$d/.config/ytq/config"; echo "$d"; }
 # start_runner <side> <home> <gates>: 'run --quiet' in the background, with
 # RUNNER its own pid. A simple command, not the py/rs functions: a function
 # put in the background runs in a subshell, and $! would be that subshell --
