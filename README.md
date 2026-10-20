@@ -235,6 +235,9 @@ guide to the workflow this exists for: a URL copied on the Mac, through the
 SPICE clipboard, into ytq's queue, and out as a file on the folder the Mac
 shares with the guest.
 
+**[docs/FEATURE_GUIDE.md](docs/FEATURE_GUIDE.md)** is the tour in pictures: a
+capture recorded, broken, repaired, served and exported, each step a real session.
+
 ## Settings
 
 `sstr config` is the settings of all three programs: what each one is, which

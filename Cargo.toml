@@ -10,6 +10,8 @@ license = "MIT"
 authors = ["Paul Richeson", "Claude"]
 repository = "https://github.com/vonglurt/staticstream"
 readme = "README.md"
+# The feature guide's pictures stay in the repository, not in the crate.
+exclude = ["docs/features/"]
 keywords = ["reed-solomon", "archive", "yt-dlp", "stream", "tui"]
 categories = ["command-line-utilities", "encoding", "multimedia", "filesystem"]
 
